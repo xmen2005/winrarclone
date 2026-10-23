@@ -1,0 +1,52 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-msys2:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-libarchive
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/mingw64
+
+      - name: Build
+        run: cmake --build build
+
+      - name: CLI smoke test
+        run: |
+          cd build
+          echo "hello from CI" > sample.txt
+          ./wrclone.exe a sample.zip sample.txt
+          ./wrclone.exe t sample.zip
+          ./wrclone.exe x sample.zip -o out
+          cat out/sample.txt
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: winrar-clone-win64
+          path: |
+            build/wrclone.exe
+            build/wrclone_gui.exe
