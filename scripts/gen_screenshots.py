@@ -4,7 +4,7 @@ import os
 out_dir = r"D:\winrarsetup\docs\screenshots"
 os.makedirs(out_dir, exist_ok=True)
 
-names = ["main_window", "archive_dialog", "progress_dialog"]
+names = ["main"]
 for name in names:
     im = Image.new("RGB", (800, 500), (240, 240, 240))
     d = ImageDraw.Draw(im)
