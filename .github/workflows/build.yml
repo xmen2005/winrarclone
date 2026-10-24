@@ -34,6 +34,11 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      - name: Unit tests
+        run: |
+          cd build
+          ctest --output-on-failure
+
       - name: CLI smoke test
         run: |
           cd build
@@ -42,6 +47,9 @@ jobs:
           ./wrclone.exe t sample.zip
           ./wrclone.exe x sample.zip -o out
           cat out/sample.txt
+          ./wrclone.exe a sample.wrc sample.txt --solid
+          ./wrclone.exe t sample.wrc
+          ./wrclone.exe x sample.wrc -o out2
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4

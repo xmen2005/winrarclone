@@ -26,7 +26,7 @@ u8   payload[headerSize]
 u8   data[dataLen]                (absent when dataLen == 0)
 ```
 
-Frame fixed size = 24 bytes.
+Frame fixed size = 26 bytes.
 
 ## 3. MAIN header (type 1) — always first
 
@@ -51,7 +51,7 @@ u64  packedSize     == frame dataLen
 u32  crc32          CRC32 of the ORIGINAL (uncompressed) data
 u32  attrs          Windows attributes
 u64  mtime          Unix seconds (UTC)
-u8   method         0=Store 1=Deflate 2=LZSS
+u8   method         0=Store 1=Deflate 2=LZSS 3=LZSS+Deflate 4=Zstd
 u8   encFlag        0x01 = data region encrypted (AES-256-CBC)
 u16  nameLen
 u8   name[nameLen]  relative path, '/' separators ('/' suffix marks directories)

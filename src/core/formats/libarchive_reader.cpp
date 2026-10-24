@@ -8,8 +8,10 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include <algorithm>
 #include <set>
 #include <sys/stat.h>
+#include <vector>
 
 namespace wrc {
 namespace la {
@@ -184,6 +186,7 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         const void* buf = nullptr;
         size_t sz = 0;
         int64_t off = 0;
+        uint64_t cur = 0;
         for (;;) {
             if (cf && !cf()) throw CancelledError();
             rc = archive_read_data_block(r.a, &buf, &sz, &off);
@@ -193,11 +196,38 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
                 setErr(r.a, err, "data failed");
                 return false;
             }
+            // Handle sparse holes: fill gap with zeros.
+            if (off > (int64_t)cur) {
+                uint64_t gap = (uint64_t)off - cur;
+                std::vector<uint8_t> zeros(1u << 20, 0);
+                while (gap > 0) {
+                    uint32_t chunk = (uint32_t)std::min<uint64_t>(gap, zeros.size());
+                    if (!outFile.write(zeros.data(), chunk)) {
+                        outFile.close();
+                        err = "write failed";
+                        return false;
+                    }
+                    gap -= chunk;
+                    cur += chunk;
+                }
+            } else if (off < (int64_t)cur) {
+                // out of order; seek
+                outFile.seek((uint64_t)off);
+                cur = (uint64_t)off;
+            }
             if (sz) {
-                if (!outFile.write(buf, uint32_t(sz))) {
-                    outFile.close();
-                    err = "write failed";
-                    return false;
+                const uint8_t* p = static_cast<const uint8_t*>(buf);
+                size_t left = sz;
+                while (left > 0) {
+                    uint32_t chunk = (uint32_t)std::min<size_t>(left, 1u << 20);
+                    if (!outFile.write(p, chunk)) {
+                        outFile.close();
+                        err = "write failed";
+                        return false;
+                    }
+                    p += chunk;
+                    left -= chunk;
+                    cur += chunk;
                 }
                 pt.addDone(sz);
                 pt.check(cf);
