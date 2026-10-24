@@ -653,12 +653,12 @@ PackedItem zstdToTemp(const ScanItem& it, const std::wstring& tempDir, int idx,
     std::vector<uint8_t> outBuf(ZSTD_CStreamOutSize());
     uint32_t crc = crc32Init();
     uint64_t done = 0;
+    ZSTD_inBuffer input = {nullptr, 0, 0};
     int finished = 0;
     try {
         while (!finished) {
             if (cf && !cf()) throw CancelledError();
-            ZSTD_inBuffer input = {nullptr, 0, 0};
-            if (done < it.size) {
+            if (input.pos == input.size && done < it.size) {
                 uint64_t want = std::min<uint64_t>(inBuf.size(), it.size - done);
                 uint32_t got = 0;
                 if (!src.read(inBuf.data(), uint32_t(want), got) || got == 0) throw WrcError("read failed");
@@ -670,12 +670,12 @@ PackedItem zstdToTemp(const ScanItem& it, const std::wstring& tempDir, int idx,
             }
             ZSTD_outBuffer output = {outBuf.data(), outBuf.size(), 0};
             size_t ret = ZSTD_compressStream2(cctx, &output, &input,
-                                             (done >= it.size) ? ZSTD_e_end : ZSTD_e_continue);
+                                             (done >= it.size && input.pos == input.size) ? ZSTD_e_end : ZSTD_e_continue);
             if (ZSTD_isError(ret)) throw WrcError("zstd compress failed");
             if (output.pos && !dst.write(outBuf.data(), uint32_t(output.pos)))
                 throw WrcError("write failed");
             res.packedSize += output.pos;
-            pt.addDone(input.size);
+            pt.addDone(input.size > 0 && input.pos == input.size ? input.size : 0);
             pt.setFile(fileNameOf(it.fullPath));
             pt.check(cf);
             if (done >= it.size && input.pos == input.size && ret == 0) finished = 1;
@@ -697,7 +697,7 @@ public:
     CrcFileSink(File& f) : f_(f) {}
     void write(const void* buf, size_t len) override {
         if (len) {
-            f_.write(buf, uint32_t(len));
+            if (!f_.write(buf, uint32_t(len))) throw WrcError("write failed");
             crc_ = crc32Update(crc_, buf, len);
             written_ += len;
         }
@@ -816,37 +816,75 @@ bool extractEntry(PartStream& st, const FileEntry& e, uint64_t dataOff,
         return true;
     }
     if (e.method == 4) {
-        // Zstd (streaming decompression)
-        std::vector<uint8_t> packed;
-        if (e.encrypted) {
-            if (!readRegionEncrypted(st, dataOff, e.packedSize, dataKey,
-                                     [&](const uint8_t* p, size_t n) { packed.insert(packed.end(), p, p + n); },
-                                     err))
-                return false;
-        } else {
-            packed.resize(size_t(e.packedSize));
-            size_t got = 0;
-            if (!st.pread(packed.data(), size_t(e.packedSize), dataOff, got) ||
-                got != e.packedSize) {
-                err = "read failed";
-                return false;
-            }
-        }
+        // Zstd (streaming decompression, bounded memory)
         ZSTD_DCtx* dctx = ZSTD_createDCtx();
         if (!dctx) { err = "zstd init failed"; return false; }
-        ZSTD_inBuffer input = {packed.data(), packed.size(), 0};
         std::vector<uint8_t> outBuf(1u << 20);
-        size_t ret = 0;
-        do {
-            ZSTD_outBuffer output = {outBuf.data(), outBuf.size(), 0};
-            ret = ZSTD_decompressStream(dctx, &output, &input);
-            if (ZSTD_isError(ret)) {
-                ZSTD_freeDCtx(dctx);
-                err = "zstd decompress failed";
-                return false;
+        std::vector<uint8_t> inBuf(1u << 20);
+
+        if (e.encrypted) {
+            // Buffer decrypted data to temp file (MAC verified inside).
+            std::wstring tmpPacked = directoryOf(outFile.handle() ? L"" : L"") + L"\\~zstdpacked" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+            // Use destDir? We don't have destDir here; use system temp.
+            wchar_t tmpDir[MAX_PATH];
+            GetTempPathW(MAX_PATH, tmpDir);
+            tmpPacked = std::wstring(tmpDir) + L"~zstdpacked" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+            File tmpF;
+            if (!tmpF.openWriteTruncate(tmpPacked)) { ZSTD_freeDCtx(dctx); err = "cannot create temp"; return false; }
+            std::string rerr;
+            if (!readRegionEncrypted(st, dataOff, e.packedSize, dataKey,
+                                     [&](const uint8_t* p, size_t n) { tmpF.write(p, (uint32_t)n); },
+                                     rerr)) {
+                tmpF.close(); deleteFileForever(tmpPacked); ZSTD_freeDCtx(dctx); err = rerr; return false;
             }
-            if (output.pos) sink.write(outBuf.data(), (uint32_t)output.pos);
-        } while (ret != 0);
+            tmpF.close();
+            // stream decompress from temp file
+            File src;
+            if (!src.openRead(tmpPacked)) { deleteFileForever(tmpPacked); ZSTD_freeDCtx(dctx); err = "read failed"; return false; }
+            uint64_t remaining = src.size();
+            ZSTD_inBuffer input = {nullptr, 0, 0};
+            std::vector<uint8_t> chunk(1u << 20);
+            while (true) {
+                if (input.pos == input.size && remaining > 0) {
+                    uint64_t want = std::min<uint64_t>(chunk.size(), remaining);
+                    uint32_t got = 0;
+                    if (!src.read(chunk.data(), (uint32_t)want, got) || got == 0) { src.close(); deleteFileForever(tmpPacked); ZSTD_freeDCtx(dctx); err = "read failed"; return false; }
+                    input.src = chunk.data();
+                    input.size = got;
+                    input.pos = 0;
+                    remaining -= got;
+                }
+                ZSTD_outBuffer output = {outBuf.data(), outBuf.size(), 0};
+                size_t r = ZSTD_decompressStream(dctx, &output, &input);
+                if (ZSTD_isError(r)) { src.close(); deleteFileForever(tmpPacked); ZSTD_freeDCtx(dctx); err = "zstd decompress failed"; return false; }
+                if (output.pos) sink.write(outBuf.data(), (uint32_t)output.pos);
+                if (remaining == 0 && input.pos == input.size && r == 0) break;
+            }
+            src.close();
+            deleteFileForever(tmpPacked);
+        } else {
+            uint64_t remaining = e.packedSize;
+            std::vector<uint8_t> chunk(1u << 20);
+            ZSTD_inBuffer input = {nullptr, 0, 0};
+            while (true) {
+                if (input.pos == input.size && remaining > 0) {
+                    uint64_t want = std::min<uint64_t>(chunk.size(), remaining);
+                    size_t got = 0;
+                    if (!st.pread(chunk.data(), (uint32_t)want, dataOff + (e.packedSize - remaining), got) || got != want) {
+                        ZSTD_freeDCtx(dctx); err = "read failed"; return false;
+                    }
+                    input.src = chunk.data();
+                    input.size = got;
+                    input.pos = 0;
+                    remaining -= got;
+                }
+                ZSTD_outBuffer output = {outBuf.data(), outBuf.size(), 0};
+                size_t r = ZSTD_decompressStream(dctx, &output, &input);
+                if (ZSTD_isError(r)) { ZSTD_freeDCtx(dctx); err = "zstd decompress failed"; return false; }
+                if (output.pos) sink.write(outBuf.data(), (uint32_t)output.pos);
+                if (remaining == 0 && input.pos == input.size && r == 0) break;
+            }
+        }
         ZSTD_freeDCtx(dctx);
         crcOut = sink.crc();
         return true;

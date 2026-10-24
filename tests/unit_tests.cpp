@@ -427,6 +427,56 @@ int main() {
     testUnicodeName();
     testLongPathArchive();
 
+    // Tampered authentication tag (encrypted archive) must be rejected.
+    {
+        std::vector<ScanItem> items = scanInputs({tpath(L"unit\\tree")});
+        ArchiveOptions opt;
+        opt.archivePath = tpath(L"unit\\t_tamper.wrc");
+        opt.method = Method::Normal;
+        opt.dictSize = 4ull << 20;
+        opt.password = L"secret";
+        opt.encryptNames = true;
+        uint64_t ti = 0, to = 0;
+        wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+        // Flip a byte in the file data (last 64 bytes before EOF, likely MAC region).
+        File f;
+        if (f.openWriteAppend(opt.archivePath)) {
+            uint64_t sz = f.size();
+            if (sz > 100) {
+                f.seek(sz - 50);
+                uint8_t b = 0xFF;
+                f.write(&b, 1);
+            }
+            f.close();
+        }
+        int bad = 0;
+        std::string err;
+        bool ok = wsar::test(opt.archivePath, opt.password, nullptr, [] { return true; }, bad, err);
+        CHECK("tampered tag rejected", !ok || bad > 0 || !err.empty());
+    }
+
+    // Large Zstd round-trip.
+    {
+        writeFile(tpath(L"unit\\large.txt"), randomData(1 << 20, 99));
+        std::vector<ScanItem> items = scanInputs({tpath(L"unit\\large.txt")});
+        ArchiveOptions opt;
+        opt.archivePath = tpath(L"unit\\t_large_zstd.wrc");
+        opt.method = Method::Zstd;
+        opt.dictSize = 4ull << 20;
+        uint64_t ti = 0, to = 0;
+        bool built = false;
+        try { wsar::build(items, opt, nullptr, [] { return true; }, ti, to); built = true; } catch (const std::exception& ex) { printf("  large zstd err: %s\n", ex.what()); built = false; }
+        CHECK("large zstd build", built);
+        std::wstring dest = tpath(L"unit\\large_zstd_out");
+        std::vector<std::wstring> extracted;
+        std::string err;
+        CHECK("large zstd extract",
+              wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+        std::string back;
+        CHECK("large zstd content",
+              readFile(dest + L"\\large.txt", back) && back == randomData(1 << 20, 99));
+    }
+
     printf("\nTOTAL: pass=%d fail=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
