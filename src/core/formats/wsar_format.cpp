@@ -863,7 +863,6 @@ bool extractEntry(PartStream& st, const FileEntry& e, uint64_t dataOff,
         std::vector<uint8_t> inBuf(1u << 20);
         std::vector<uint8_t> outBuf(1u << 20);
         uint64_t remaining = packedIn.size();
-        uint64_t consumed = 0;
         int rc = Z_OK;
         do {
             if (zs.avail_in == 0 && remaining > 0) {
@@ -872,7 +871,6 @@ bool extractEntry(PartStream& st, const FileEntry& e, uint64_t dataOff,
                 if (!packedIn.read(inBuf.data(), (uint32_t)want, got) || got != want) { inflateEnd(&zs); packedIn.close(); lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "read failed"; return false; }
                 zs.next_in = inBuf.data();
                 zs.avail_in = (uInt)got;
-                consumed += got;
                 remaining -= got;
             }
             zs.next_out = outBuf.data();
@@ -1139,11 +1137,9 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
             if (dataKey.empty()) throw WrcError("crypto init failed");
         }
 
-        // Read all files into one buffer, compute per-file CRCs.
+        // First pass: compute per-file metadata (bounded memory).
         struct SF { std::wstring name; uint64_t size; uint32_t crc; uint32_t attrs; uint64_t mtime; };
         std::vector<SF> files;
-        std::vector<uint8_t> solidIn;
-        solidIn.reserve(total);
         std::wstring tempDir = directoryOf(opt.archivePath);
         for (const auto& it : items) {
             if (it.isDir) continue;
@@ -1158,46 +1154,91 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
                 uint32_t got = 0;
                 if (!f.read(buf.data(), uint32_t(want), got) || got == 0) throw WrcError("read failed");
                 crc = crc32Update(crc, buf.data(), got);
-                solidIn.insert(solidIn.end(), buf.data(), buf.data() + got);
                 done += got;
                 pt.addDone(got);
                 pt.check(cf);
             }
             f.close();
-            std::string n8 = toUtf8(it.relPath);
-            files.push_back({fromUtf8(n8), it.size, crc, it.attrs & 0xFF, it.mtime});
+            files.push_back({fromUtf8(toUtf8(it.relPath)), it.size, crc, it.attrs & 0xFF, it.mtime});
         }
 
-        // Compress concatenated data with Deflate (level from method).
+        // Second pass: stream-compress concatenated data into a temp file (bounded memory).
         int level = deflateLevel(opt.method);
         uint8_t codec = (level == 0) ? 0 : 1;
-        std::vector<uint8_t> packed;
+        std::wstring packedTmp = tempDir + L"\\~solidpacked" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+        File packedFile;
+        if (!packedFile.openWriteTruncate(packedTmp)) throw WrcError("cannot create temp file");
+        uint64_t packedSize = 0;
         if (level == 0) {
-            packed = solidIn;
+            for (const auto& it : items) {
+                if (it.isDir) continue;
+                if (cf && !cf()) { packedFile.close(); deleteFileForever(packedTmp); throw CancelledError(); }
+                File f;
+                if (!f.openRead(it.fullPath)) { packedFile.close(); deleteFileForever(packedTmp); throw WrcError("cannot open"); }
+                std::vector<uint8_t> buf(1u << 20);
+                uint64_t done = 0;
+                while (done < it.size) {
+                    uint64_t want = std::min<uint64_t>(buf.size(), it.size - done);
+                    uint32_t got = 0;
+                    if (!f.read(buf.data(), uint32_t(want), got) || got == 0) { f.close(); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("read failed"); }
+                    if (!packedFile.write(buf.data(), got)) { f.close(); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("write failed"); }
+                    packedSize += got;
+                    done += got;
+                    pt.check(cf);
+                }
+                f.close();
+            }
         } else {
             z_stream zs{};
-            if (deflateInit2(&zs, level, Z_DEFLATED, -15, 9, Z_DEFAULT_STRATEGY) != Z_OK)
-                throw WrcError("zlib init failed");
+            if (deflateInit2(&zs, level, Z_DEFLATED, -15, 9, Z_DEFAULT_STRATEGY) != Z_OK) {
+                packedFile.close(); deleteFileForever(packedTmp); throw WrcError("zlib init failed");
+            }
+            std::vector<uint8_t> inBuf(1u << 20);
             std::vector<uint8_t> outBuf(1u << 20);
-            zs.next_in = solidIn.data();
-            zs.avail_in = uInt(solidIn.size());
-            // feed all input
+            for (const auto& it : items) {
+                if (it.isDir) continue;
+                if (cf && !cf()) { deflateEnd(&zs); packedFile.close(); deleteFileForever(packedTmp); throw CancelledError(); }
+                File f;
+                if (!f.openRead(it.fullPath)) { deflateEnd(&zs); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("cannot open"); }
+                uint64_t done = 0;
+                while (done < it.size) {
+                    uint64_t want = std::min<uint64_t>(inBuf.size(), it.size - done);
+                    uint32_t got = 0;
+                    if (!f.read(inBuf.data(), uint32_t(want), got) || got == 0) { deflateEnd(&zs); f.close(); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("read failed"); }
+                    zs.next_in = inBuf.data();
+                    zs.avail_in = got;
+                    int rc = Z_OK;
+                    while (zs.avail_in > 0) {
+                        zs.next_out = outBuf.data();
+                        zs.avail_out = uint32_t(outBuf.size());
+                        rc = deflate(&zs, Z_NO_FLUSH);
+                        if (rc != Z_OK && rc != Z_BUF_ERROR) { deflateEnd(&zs); f.close(); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("deflate failed"); }
+                        size_t have = outBuf.size() - zs.avail_out;
+                        if (have && !packedFile.write(outBuf.data(), uint32_t(have))) { deflateEnd(&zs); f.close(); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("write failed"); }
+                        packedSize += have;
+                    }
+                    done += got;
+                    pt.addDone(got);
+                    pt.check(cf);
+                }
+                f.close();
+            }
+            zs.next_in = nullptr;
+            zs.avail_in = 0;
             int rc = Z_OK;
             do {
                 zs.next_out = outBuf.data();
                 zs.avail_out = uint32_t(outBuf.size());
                 rc = deflate(&zs, Z_FINISH);
                 size_t have = outBuf.size() - zs.avail_out;
-                if (have) packed.insert(packed.end(), outBuf.data(), outBuf.data() + have);
-                if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
-                    deflateEnd(&zs);
-                    throw WrcError("deflate failed");
-                }
+                if (have && !packedFile.write(outBuf.data(), uint32_t(have))) { deflateEnd(&zs); packedFile.close(); deleteFileForever(packedTmp); throw WrcError("write failed"); }
+                packedSize += have;
             } while (rc != Z_STREAM_END);
             deflateEnd(&zs);
         }
+        packedFile.close();
 
-        // Write container.
+        // Write container (copy from packedTmp).
         std::wstring base = stripExtension(opt.archivePath);
         MultiWriter out;
         if (!out.open(opt.archivePath, base, opt.volumeSize))
@@ -1233,18 +1274,39 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
                 put16(pl, uint16_t(n8.size()));
                 pl.insert(pl.end(), n8.begin(), n8.end());
             }
-            uint64_t dataLen = encrypt ? (16 + ((packed.size() / 16 + 1) * 16) + 16) : packed.size();
+            uint64_t dataLen = encrypt ? (16 + ((packedSize / 16 + 1) * 16) + 16) : packedSize;
             fw.start(H_SOLID, 0, dataLen);
             fw.payload(pl.data(), pl.size());
             if (!fw.commit()) throw WrcError("write failed");
 
-            // data region
+            // data region (copy from packedTmp, encrypt if needed)
+            File packedIn;
+            if (!packedIn.openRead(packedTmp)) throw WrcError("cannot read temp");
             if (encrypt) {
                 DataEncryptor de(dataKey, out);
-                de.feed(packed.data(), packed.size(), true);
+                std::vector<uint8_t> buf(1u << 20);
+                uint64_t done = 0;
+                while (done < packedSize) {
+                    uint64_t want = std::min<uint64_t>(buf.size(), packedSize - done);
+                    uint32_t got = 0;
+                    if (!packedIn.read(buf.data(), uint32_t(want), got) || got == 0) throw WrcError("read failed");
+                    de.feed(buf.data(), got, false);
+                    done += got;
+                }
+                de.feed(nullptr, 0, true);
             } else {
-                if (!out.write(packed.data(), uint32_t(packed.size()))) throw WrcError("write failed");
+                std::vector<uint8_t> buf(1u << 20);
+                uint64_t done = 0;
+                while (done < packedSize) {
+                    uint64_t want = std::min<uint64_t>(buf.size(), packedSize - done);
+                    uint32_t got = 0;
+                    if (!packedIn.read(buf.data(), uint32_t(want), got) || got == 0) throw WrcError("read failed");
+                    if (!out.write(buf.data(), got)) throw WrcError("write failed");
+                    done += got;
+                }
             }
+            packedIn.close();
+            deleteFileForever(packedTmp);
 
             // END
             std::vector<uint8_t> endPl;
@@ -1255,6 +1317,7 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
             if (!fw.commit()) throw WrcError("write failed");
         } catch (...) {
             out.close();
+            deleteFileForever(packedTmp);
             throw;
         }
         out.close();
@@ -1263,7 +1326,6 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
         for (auto& pp : out.parts()) totalOut += fileSizeOf(pp);
         return true;
     }
-
     uint64_t total = scanTotalSize(items);
     ProgressTracker pt(Progress::Phase::Compress, total, pf);
     pt.check(cf);
