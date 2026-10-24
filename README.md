@@ -19,7 +19,9 @@ a responsive Qt 6 interface and full Windows integration. 100% open source.
 - **dictionary_mgr** — RAM safety gate per the specification pseudo-code:
   compression requires `dict * 2` bytes of available RAM; dictionaries up to
   **64 GB** selectable, the encoder window is RAM-bounded while the decoder is
-  file-backed (O(1) RAM for any declared dictionary).
+  file-backed (O(1) RAM for any declared dictionary). Solid and Zstd
+  extraction use bounded temporary files; LZSS compression buffers one
+  file's compressed output in memory.
 - **lzss** — LZ77-class codec with configurable dictionary window.
 - **compressor / decompressor** — streaming pipelines, CRC32-verified,
   parallel first pass (thread pool), non-blocking UI.
