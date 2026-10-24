@@ -11,6 +11,7 @@
 #include "utils/security.h"
 
 #include <bcrypt.h>
+#include <windows.h>
 #include <zlib.h>
 #include <zstd.h>
 
@@ -397,10 +398,24 @@ bool readRegionEncrypted(PartStream& st, uint64_t dataOff, uint64_t dataLen,
     }
     std::vector<uint8_t> iv(head, head + 16);
     std::vector<uint8_t> inBuf(1u << 20), outBuf((1u << 20) + 16);
+
+    // Temp file for plaintext (bounded memory).
+    wchar_t tmpDir[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmpDir);
+    wchar_t tmpPath[MAX_PATH];
+    if (!GetTempFileNameW(tmpDir, L"wrc", 0, tmpPath)) {
+        err = "cannot create temp file";
+        return false;
+    }
+    File tmpFile;
+    if (!tmpFile.openWriteTruncate(tmpPath)) {
+        DeleteFileW(tmpPath);
+        err = "cannot create temp file";
+        return false;
+    }
+
     uint64_t consumed = 16;
-    // Buffer plaintext until MAC is verified (no untrusted data to sink).
-    std::vector<uint8_t> plain;
-    plain.reserve(size_t(cipherTotal));
+    bool ok = true;
     while (consumed + 16 < cipherTotal) {
         uint64_t left = cipherTotal - consumed - 16;
         uint64_t want = std::min<uint64_t>(left, inBuf.size());
@@ -408,48 +423,75 @@ bool readRegionEncrypted(PartStream& st, uint64_t dataOff, uint64_t dataLen,
         if (want == 0) break;
         if (!st.pread(inBuf.data(), size_t(want), dataOff + consumed, got) ||
             got != want) {
-            err = "read failed";
-            return false;
+            ok = false; break;
         }
         mac.update(inBuf.data(), size_t(want));
         size_t outN = 0;
         if (!aes.decrypt(inBuf.data(), size_t(want), outBuf.data(), outBuf.size(), outN,
                          iv, false)) {
-            err = "decrypt failed";
-            return false;
+            ok = false; break;
         }
-        plain.insert(plain.end(), outBuf.data(), outBuf.data() + outN);
+        if (outN && !tmpFile.write(outBuf.data(), (uint32_t)outN)) { ok = false; break; }
         consumed += want;
     }
-    uint64_t left = cipherTotal - consumed;  // >= 16: final block(s) + padding
+    uint64_t left = cipherTotal - consumed;
     std::vector<uint8_t> tail(size_t(left) + 16, 0);
-    if (left && (!st.pread(tail.data(), uint32_t(left), dataOff + consumed, got) ||
-                 got != left)) {
-        err = "read failed";
-        return false;
+    if (ok && left && (!st.pread(tail.data(), uint32_t(left), dataOff + consumed, got) ||
+                       got != left)) {
+        ok = false;
     }
     uint8_t macBuf[16];
-    if (!st.pread(macBuf, 16, dataOff + dataLen - 16, got) || got != 16) {
-        err = "read failed";
-        return false;
+    if (ok && (!st.pread(macBuf, 16, dataOff + dataLen - 16, got) || got != 16)) {
+        ok = false;
     }
-    mac.update(tail.data(), size_t(left));
-    std::vector<uint8_t> macCalc;
-    if (!mac.finish(macCalc) || memcmp(macCalc.data(), macBuf, 16) != 0) {
-        err = "authentication failed (wrong password or corrupted data)";
-        return false;
+    if (ok) {
+        mac.update(tail.data(), size_t(left));
+        std::vector<uint8_t> macCalc;
+        if (!mac.finish(macCalc) || memcmp(macCalc.data(), macBuf, 16) != 0) {
+            ok = false;
+        }
     }
-    if (left > 0) {
+    if (ok && left > 0) {
         size_t outN = 0;
         if (!aes.decrypt(tail.data(), size_t(left), outBuf.data(), outBuf.size(), outN,
                          iv, true)) {
-            err = "decrypt failed";
+            ok = false;
+        } else if (outN && !tmpFile.write(outBuf.data(), (uint32_t)outN)) {
+            ok = false;
+        }
+    }
+    tmpFile.close();
+
+    if (!ok) {
+        DeleteFileW(tmpPath);
+        err = "authentication failed (wrong password or corrupted data)";
+        // distinguish read errors
+        return false;
+    }
+
+    // MAC verified: stream temp file to sink.
+    File tmpIn;
+    if (!tmpIn.openRead(tmpPath)) {
+        DeleteFileW(tmpPath);
+        err = "read failed";
+        return false;
+    }
+    std::vector<uint8_t> buf(1u << 20);
+    uint64_t remaining = tmpIn.size();
+    while (remaining > 0) {
+        uint64_t want = std::min<uint64_t>(buf.size(), remaining);
+        uint32_t g = 0;
+        if (!tmpIn.read(buf.data(), (uint32_t)want, g) || g != want) {
+            tmpIn.close();
+            DeleteFileW(tmpPath);
+            err = "read failed";
             return false;
         }
-        if (outN) plain.insert(plain.end(), outBuf.data(), outBuf.data() + outN);
+        sink(buf.data(), g);
+        remaining -= g;
     }
-    // MAC verified: sink plaintext now.
-    if (!plain.empty()) sink(plain.data(), plain.size());
+    tmpIn.close();
+    DeleteFileW(tmpPath);
     return true;
 }
 
@@ -772,46 +814,93 @@ bool extractEntry(PartStream& st, const FileEntry& e, uint64_t dataOff,
                   ControlFn cf, std::string& err) {
     CrcFileSink sink(outFile);
     if (e.method == 3) {
-        // LZSS wrapped in Deflate (entropy coding).
-        std::vector<uint8_t> packed;
+        // LZSS wrapped in Deflate (entropy coding), streaming (bounded memory).
+        wchar_t tmpDir[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmpDir);
+        wchar_t packedTmp[MAX_PATH];
+        if (!GetTempFileNameW(tmpDir, L"wrc", 0, packedTmp)) { err = "cannot create temp"; return false; }
+
+        // Produce packed (deflated LZSS) bytes into packedTmp.
         if (e.encrypted) {
+            File pf;
+            if (!pf.openWriteTruncate(packedTmp)) { DeleteFileW(packedTmp); err = "cannot create temp"; return false; }
+            std::string rerr;
             if (!readRegionEncrypted(st, dataOff, e.packedSize, dataKey,
-                                     [&](const uint8_t* p, size_t n) {
-                                         packed.insert(packed.end(), p, p + n);
-                                     },
-                                     err))
-                return false;
-        } else {
-            packed.resize(size_t(e.packedSize));
-            size_t got = 0;
-            if (!st.pread(packed.data(), size_t(e.packedSize), dataOff, got) ||
-                got != e.packedSize) {
-                err = "read failed";
-                return false;
+                                     [&](const uint8_t* p, size_t n) { pf.write(p, (uint32_t)n); },
+                                     rerr)) {
+                pf.close(); DeleteFileW(packedTmp); err = rerr; return false;
             }
+            pf.close();
+        } else {
+            File pf;
+            if (!pf.openWriteTruncate(packedTmp)) { DeleteFileW(packedTmp); err = "cannot create temp"; return false; }
+            // copy deflated bytes (packed region) directly
+            uint64_t remaining = e.packedSize;
+            uint64_t offset = dataOff;
+            std::vector<uint8_t> buf(1u << 20);
+            while (remaining > 0) {
+                uint64_t want = std::min<uint64_t>(buf.size(), remaining);
+                size_t got = 0;
+                if (!st.pread(buf.data(), (uint32_t)want, offset, got) || got != want) {
+                    pf.close(); DeleteFileW(packedTmp); err = "read failed"; return false;
+                }
+                if (!pf.write(buf.data(), (uint32_t)got)) { pf.close(); DeleteFileW(packedTmp); err = "write failed"; return false; }
+                offset += got;
+                remaining -= got;
+            }
+            pf.close();
         }
-        // inflate
-        std::vector<uint8_t> lzssBytes;
+
+        // Inflate packedTmp -> lzssTmp (bounded memory).
+        wchar_t lzssTmp[MAX_PATH];
+        if (!GetTempFileNameW(tmpDir, L"wrc", 0, lzssTmp)) { DeleteFileW(packedTmp); err = "cannot create temp"; return false; }
+        File lzssFile;
+        if (!lzssFile.openWriteTruncate(lzssTmp)) { DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "cannot create temp"; return false; }
+        File packedIn;
+        if (!packedIn.openRead(packedTmp)) { lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "read failed"; return false; }
         z_stream zs{};
-        if (inflateInit2(&zs, -15) != Z_OK) { err = "zlib init failed"; return false; }
+        if (inflateInit2(&zs, -15) != Z_OK) { packedIn.close(); lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "zlib init failed"; return false; }
+        std::vector<uint8_t> inBuf(1u << 20);
         std::vector<uint8_t> outBuf(1u << 20);
-        zs.next_in = packed.data();
-        zs.avail_in = uInt(packed.size());
+        uint64_t remaining = packedIn.size();
+        uint64_t consumed = 0;
         int rc = Z_OK;
         do {
-            zs.next_out = outBuf.data();
-            zs.avail_out = uint32_t(outBuf.size());
-            rc = inflate(&zs, Z_NO_FLUSH);
-            if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
-                inflateEnd(&zs);
-                err = "inflate failed";
-                return false;
+            if (zs.avail_in == 0 && remaining > 0) {
+                uint64_t want = std::min<uint64_t>(inBuf.size(), remaining);
+                uint32_t got = 0;
+                if (!packedIn.read(inBuf.data(), (uint32_t)want, got) || got != want) { inflateEnd(&zs); packedIn.close(); lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "read failed"; return false; }
+                zs.next_in = inBuf.data();
+                zs.avail_in = (uInt)got;
+                consumed += got;
+                remaining -= got;
             }
+            zs.next_out = outBuf.data();
+            zs.avail_out = (uInt)outBuf.size();
+            rc = inflate(&zs, Z_NO_FLUSH);
+            if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) { inflateEnd(&zs); packedIn.close(); lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "inflate failed"; return false; }
             size_t have = outBuf.size() - zs.avail_out;
-            if (have) lzssBytes.insert(lzssBytes.end(), outBuf.data(), outBuf.data() + have);
-        } while (rc != Z_STREAM_END && zs.avail_out == 0);
+            if (have && !lzssFile.write(outBuf.data(), (uint32_t)have)) { inflateEnd(&zs); packedIn.close(); lzssFile.close(); DeleteFileW(packedTmp); DeleteFileW(lzssTmp); err = "write failed"; return false; }
+        } while (rc != Z_STREAM_END && (remaining > 0 || zs.avail_in > 0));
         inflateEnd(&zs);
-        if (!lzssDecode(lzssBytes.data(), lzssBytes.size(), sink, err)) return false;
+        packedIn.close();
+        lzssFile.close();
+        DeleteFileW(packedTmp);
+
+        // memory-map lzssTmp and lzss-decode
+        File src;
+        if (!src.openRead(lzssTmp)) { DeleteFileW(lzssTmp); err = "read failed"; return false; }
+        uint64_t sz = src.size();
+        HANDLE map = CreateFileMappingW(src.handle(), nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!map) { src.close(); DeleteFileW(lzssTmp); err = "mapping failed"; return false; }
+        const uint8_t* view = static_cast<const uint8_t*>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0));
+        if (!view) { CloseHandle(map); src.close(); DeleteFileW(lzssTmp); err = "mapping failed"; return false; }
+        bool ok = lzssDecode(view, sz, sink, err);
+        UnmapViewOfFile(view);
+        CloseHandle(map);
+        src.close();
+        DeleteFileW(lzssTmp);
+        if (!ok) return false;
         crcOut = sink.crc();
         return true;
     }
