@@ -3,7 +3,8 @@
 param([string]$MsysRoot = 'D:\msys64')
 
 $ErrorActionPreference = 'Stop'
-$env:PATH = "$MsysRoot\mingw64\bin;$env:PATH"
+if (Test-Path "$MsysRoot\ucrt64\bin\windeployqt6.exe") { $toolchain = 'ucrt64' } else { $toolchain = 'mingw64' }
+$env:PATH = "$MsysRoot\$toolchain\bin;$env:PATH"
 $repo = Split-Path -Parent $PSScriptRoot
 
 if (!(Test-Path "$repo\build\wrclone_gui.exe")) { throw "build first (scripts\build_msys2.ps1)" }
@@ -14,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 Copy-Item "$repo\build\wrclone.exe" $dist
 Copy-Item "$repo\build\wrclone_gui.exe" $dist
-& "$MsysRoot\mingw64\bin\windeployqt6.exe" --no-compiler-runtime --no-translations `
+& "$MsysRoot\$toolchain\bin\windeployqt6.exe" --no-compiler-runtime --no-translations `
     "$dist\wrclone_gui.exe"
 # core engine runtime deps for the CLI + Qt transitive deps (MSYS2 split DLLs)
 foreach ($dll in @('zlib1.dll','libarchive-13.dll','liblzma-5.dll','libbz2-1.dll',
@@ -27,7 +28,7 @@ foreach ($dll in @('zlib1.dll','libarchive-13.dll','liblzma-5.dll','libbz2-1.dll
                    'libharfbuzz-0.dll','libgraphite2.dll','libglib-2.0-0.dll',
                    'libintl-8.dll','libpcre2-8-0.dll','libpcre2-16-0.dll',
                    'libmd4c.dll')) {
-    $p = "$MsysRoot\mingw64\bin\$dll"
+    $p = "$MsysRoot\$toolchain\bin\$dll"
     if (Test-Path $p) { Copy-Item $p $dist }
 }
 
