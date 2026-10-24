@@ -35,3 +35,9 @@ Thumbs.db
 
 test_data/
 *.pyc
+
+# Prebuilt binaries (optional, for easy trial)
+!bin/
+!bin/**
+!bin/*.exe
+!bin/*.dll

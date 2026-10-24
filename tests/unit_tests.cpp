@@ -271,6 +271,142 @@ static void testEncryption() {
           readFile(dest + L"\\tree\\src\\deep\\rep.txt", back) && back == repetitiveData(70000));
 }
 
+static void testEncryptionWrongPassword() {
+    std::vector<ScanItem> items = scanInputs({tpath(L"unit\\tree")});
+    ArchiveOptions opt;
+    opt.archivePath = tpath(L"unit\\t_enc2.wrc");
+    opt.method = Method::Normal;
+    opt.dictSize = 4ull << 20;
+    opt.password = L"secret";
+    opt.encryptNames = true;
+    uint64_t ti = 0, to = 0;
+    wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+
+    WsarInfo info;
+    std::string err;
+    CHECK("wrong password rejected (list)",
+          !wsar::list(opt.archivePath, L"wrong", info, err));
+    int bad = 0;
+    CHECK("wrong password rejected (test)",
+          !wsar::test(opt.archivePath, L"wrong", nullptr, [] { return true; }, bad, err));
+}
+
+static void testTruncated() {
+    std::vector<ScanItem> items = scanInputs({tpath(L"unit\\tree")});
+    ArchiveOptions opt;
+    opt.archivePath = tpath(L"unit\\t_trunc.wrc");
+    opt.method = Method::Fast;
+    opt.dictSize = 4ull << 20;
+    uint64_t ti = 0, to = 0;
+    wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+
+    // Truncate the file.
+    File f;
+    if (f.openWriteAppend(opt.archivePath)) {
+        // shrink by 50 bytes
+        uint64_t sz = f.size();
+        if (sz > 50) {
+            // reopen truncate not possible; use SetEndOfFile via handle
+        }
+        f.close();
+    }
+    // Use deleteFileForever? No. Instead create a copy truncated.
+    std::wstring truncPath = tpath(L"unit\\t_trunc_cut.wrc");
+    File src;
+    if (src.openRead(opt.archivePath)) {
+        uint64_t sz = src.size();
+        uint64_t newSz = sz > 50 ? sz - 50 : 0;
+        File dst;
+        if (dst.openWriteTruncate(truncPath)) {
+            std::vector<uint8_t> buf(1u << 16);
+            uint64_t done = 0;
+            while (done < newSz) {
+                uint64_t want = std::min<uint64_t>(buf.size(), newSz - done);
+                uint32_t got = 0;
+                if (!src.read(buf.data(), uint32_t(want), got) || got == 0) break;
+                dst.write(buf.data(), got);
+                done += got;
+            }
+        }
+        src.close();
+    }
+    int bad = 0;
+    std::string err;
+    // Truncated archive should not pass integrity test.
+    bool ok = wsar::test(truncPath, L"", nullptr, [] { return true; }, bad, err);
+    CHECK("truncated archive rejected", !ok || bad > 0 || !err.empty());
+}
+
+static void testEmptyFile() {
+    writeFile(tpath(L"unit\\empty.txt"), "");
+    std::vector<ScanItem> items = scanInputs({tpath(L"unit\\empty.txt")});
+    ArchiveOptions opt;
+    opt.archivePath = tpath(L"unit\\t_empty.wrc");
+    opt.method = Method::Normal;
+    opt.dictSize = 4ull << 20;
+    uint64_t ti = 0, to = 0;
+    bool built = false;
+    try {
+        wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+        built = true;
+    } catch (...) { built = false; }
+    CHECK("empty file build", built);
+
+    WsarInfo info;
+    std::string err;
+    CHECK("empty file list", wsar::list(opt.archivePath, L"", info, err));
+    std::wstring dest = tpath(L"unit\\empty_out");
+    std::vector<std::wstring> extracted;
+    CHECK("empty file extract",
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+    std::string back;
+    CHECK("empty file content", readFile(dest + L"\\empty.txt", back) && back.empty());
+}
+
+static void testUnicodeName() {
+    writeFile(tpath(L"unit\\café_✓.txt"), "unicode content");
+    std::vector<ScanItem> items = scanInputs({tpath(L"unit\\café_✓.txt")});
+    ArchiveOptions opt;
+    opt.archivePath = tpath(L"unit\\t_unicode.wrc");
+    opt.method = Method::Normal;
+    opt.dictSize = 4ull << 20;
+    uint64_t ti = 0, to = 0;
+    wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+
+    std::wstring dest = tpath(L"unit\\unicode_out");
+    std::vector<std::wstring> extracted;
+    std::string err;
+    CHECK("unicode extract",
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+    std::string back;
+    CHECK("unicode content", readFile(dest + L"\\café_✓.txt", back) && back == "unicode content");
+}
+
+static void testLongPathArchive() {
+    std::wstring longDir = tpath(L"unit\\longarch");
+    for (int i = 0; i < 10; ++i)
+        longDir += L"\\segment_with_a_rather_long_name_0123456789_abcdefghij";
+    makeDirs(longDir);
+    writeFile(longDir + L"\\deep.txt", "deep content");
+    std::vector<ScanItem> items = scanInputs({longDir + L"\\deep.txt"});
+    ArchiveOptions opt;
+    opt.archivePath = tpath(L"unit\\t_longpath.wrc");
+    opt.method = Method::Fast;
+    opt.dictSize = 4ull << 20;
+    uint64_t ti = 0, to = 0;
+    bool built = false;
+    try {
+        wsar::build(items, opt, nullptr, [] { return true; }, ti, to);
+        built = true;
+    } catch (...) { built = false; }
+    CHECK("long path archive build", built);
+    std::wstring dest = tpath(L"unit\\longarch_out");
+    std::vector<std::wstring> extracted;
+    std::string err;
+    CHECK("long path archive extract",
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+}
+
 int main() {
     wchar_t tmpDir[MAX_PATH];
     GetTempPathW(MAX_PATH, tmpDir);
@@ -285,6 +421,11 @@ int main() {
     testZip();
     test7z();
     testEncryption();
+    testEncryptionWrongPassword();
+    testTruncated();
+    testEmptyFile();
+    testUnicodeName();
+    testLongPathArchive();
 
     printf("\nTOTAL: pass=%d fail=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
