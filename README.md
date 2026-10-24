@@ -62,6 +62,12 @@ wrclone add <path>                (shell-integration entry point: archives
                                    right-click "Add to WRC archive" verb)
 ```
 
+## Screenshots
+
+![Main window](docs/screenshots/main_window.png)
+![Archive dialog](docs/screenshots/archive_dialog.png)
+![Progress dialog](docs/screenshots/progress_dialog.png)
+
 ## Build (MSYS2 / MinGW-w64)
 
 ```powershell
