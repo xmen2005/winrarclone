@@ -750,13 +750,13 @@ void MainWindow::onAbout() {
         this, tr("About"),
         tr("<b>WinRAR Clone Engine 7.0.0</b><br>"
            "Open-source clone of the classic WinRAR 7.0 workflow.<br><br>"
-           "• Formats: WSAR (RAR5-style) / ZIP / 7Z + extraction via libarchive<br>"
-           "• Dictionaries up to 64 GB with RAM safety checks<br>"
-           "• AES-256 encryption, encrypted file names<br>"
-           "• Long paths up to 65,535 chars (\\\\?\\)<br>"
-           "• Mark-of-the-Web propagation on extraction<br>"
-           "• Non-blocking multithreaded compression<br><br>"
-           "MIT License — see repository for details."));
+           "- Formats: WSAR (RAR5-style) / ZIP / 7Z + extraction via libarchive<br>"
+           "- Dictionaries up to 64 GB with RAM safety checks<br>"
+           "- AES-256 encryption, encrypted file names<br>"
+           "- Long paths up to 65,535 chars (\\\\?\\)<br>"
+           "- Mark-of-the-Web propagation on extraction<br>"
+           "- Non-blocking multithreaded compression<br><br>"
+           "MIT License - see repository for details."));
 }
 
 // ---------------------------------------------------------------- drag&drop

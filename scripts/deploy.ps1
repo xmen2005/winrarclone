@@ -17,10 +17,10 @@ Copy-Item "$repo\build\wrclone_gui.exe" $dist
 & "$MsysRoot\mingw64\bin\windeployqt6.exe" --no-compiler-runtime --no-translations `
     "$dist\wrclone_gui.exe"
 # core engine runtime deps for the CLI
-foreach ($dll in @('zlib1.dll','libarchive-19.dll','liblzma-5.dll','libbz2.dll',
+foreach ($dll in @('zlib1.dll','libarchive-13.dll','liblzma-5.dll','libbz2.dll',
                    'libzstd.dll','liblz4.dll','libb2-1.dll','libcrypto-3-x64.dll',
                    'libssl-3-x64.dll','libwinpthread-1.dll','libgcc_s_seh-1.dll',
-                   'libstdc++-6.dll','libxml2-2.dll','libiconv-2.dll','libcharset-1.dll',
+                   'libstdc++-6.dll','libbz2-1.dll','libiconv-2.dll','libcharset-1.dll',
                    'libexpat-1.dll','libbrotlidec.dll','libbrotlicommon.dll')) {
     $p = "$MsysRoot\mingw64\bin\$dll"
     if (Test-Path $p) { Copy-Item $p $dist }
