@@ -47,6 +47,10 @@ jobs:
           ./wrclone.exe t sample.zip
           ./wrclone.exe x sample.zip -o out
           cat out/sample.txt
+          ./wrclone.exe a sample.wrc sample.txt -m5 --solid
+          ./wrclone.exe t sample.wrc
+          ./wrclone.exe a sample_zstd.wrc sample.txt --zstd --zstd-level 9
+          ./wrclone.exe t sample_zstd.wrc
           ./wrclone.exe a sample.wrc sample.txt --solid
           ./wrclone.exe t sample.wrc
           ./wrclone.exe x sample.wrc -o out2
