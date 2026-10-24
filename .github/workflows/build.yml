@@ -51,6 +51,11 @@ jobs:
           ./wrclone.exe t sample.wrc
           ./wrclone.exe a sample_zstd.wrc sample.txt --zstd --zstd-level 9
           ./wrclone.exe t sample_zstd.wrc
+
+      - name: GUI smoke test
+        run: |
+          cd build
+          powershell -Command "Start-Process -FilePath './wrclone_gui.exe' -ArgumentList '-platform','offscreen'; Start-Sleep -Seconds 5; Get-Process -Name wrclone_gui -ErrorAction SilentlyContinue | Stop-Process -Force"
           ./wrclone.exe a sample.wrc sample.txt --solid
           ./wrclone.exe t sample.wrc
           ./wrclone.exe x sample.wrc -o out2
