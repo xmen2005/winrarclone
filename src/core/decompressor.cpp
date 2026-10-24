@@ -167,19 +167,22 @@ std::string repairArchive(const std::wstring& path, const std::wstring& password
             continue;
         }
         pt.setFile(e.name);
-        std::wstring tmp =
-            tempDir + L"\\~wrcfix" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
-        // verify via a mini extract of this single entry
+        // verify via a mini extract of this single entry (always cleaned up)
         bool good = false;
-        {
-            std::vector<std::wstring> outFiles;
+        std::vector<std::wstring> outFiles;
+        try {
+            std::string ex;
             if (wsar::extract(path, tempDir, password, {e.name}, nullptr, cf, outFiles,
-                              err) &&
-                !outFiles.empty()) {
+                              ex) &&
+                !outFiles.empty())
                 good = true;
-                for (auto& f : outFiles) deleteFileForever(f);
-            }
+        } catch (const CancelledError&) {
+            for (auto& f : outFiles) deleteFileForever(f);
+            throw;
+        } catch (...) {
+            good = false;
         }
+        for (auto& f : outFiles) deleteFileForever(f);
         if (good)
             keep.push_back(e.name);
         else

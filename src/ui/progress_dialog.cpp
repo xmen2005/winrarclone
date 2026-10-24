@@ -98,7 +98,7 @@ void ProgressDialog::setDictLabel(uint64_t dictSize) {
     m_dict->setText(QString::fromStdWString(humanSize(dictSize)));
 }
 
-void ProgressDialog::execJob(std::function<std::string(ProgressDialog&)> job) {
+bool ProgressDialog::execJob(std::function<std::string(ProgressDialog&)> job) {
     m_result.clear();
     m_ctrl = 1;
     m_pauseBtn->setText(tr("Pause"));
@@ -121,6 +121,7 @@ void ProgressDialog::execJob(std::function<std::string(ProgressDialog&)> job) {
     exec();
     if (m_worker.joinable()) m_worker.join();
     m_started = false;
+    return m_result.empty();
 }
 
 bool ProgressDialog::control() {

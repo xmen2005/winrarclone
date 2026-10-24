@@ -39,7 +39,7 @@ add_library(wrc_core STATIC
     src/os_integration/context_menu.cpp
 )
 target_include_directories(wrc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(wrc_core PUBLIC ZLIB::ZLIB LibArchive::LibArchive bcrypt shell32 advapi32)
+target_link_libraries(wrc_core PUBLIC ZLIB::ZLIB LibArchive::LibArchive bcrypt shell32 advapi32 ole32 uuid)
 
 # ---------------------------------------------------------------------------
 # CLI front-end (headless core engine)
@@ -61,3 +61,13 @@ add_executable(wrclone_gui WIN32
     src/ui/info_dialog.cpp
 )
 target_link_libraries(wrclone_gui PRIVATE wrc_core Qt6::Widgets)
+
+# ---------------------------------------------------------------------------
+# Unit tests
+# ---------------------------------------------------------------------------
+enable_testing()
+add_executable(wrc_tests
+    tests/unit_tests.cpp
+)
+target_link_libraries(wrc_tests PRIVATE wrc_core)
+add_test(NAME unit_tests COMMAND wrc_tests)

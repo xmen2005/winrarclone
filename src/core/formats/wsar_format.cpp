@@ -1170,6 +1170,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         std::wstring clean;
         if (!safeRelName(e.isDir ? e.name + L"/x" : e.name, clean)) continue;
         std::wstring rel = e.isDir ? clean.substr(0, clean.size() - 2) : clean;
+        // Windows APIs (especially \\?\ paths) do not normalize '/' — use '\'
+        std::replace(rel.begin(), rel.end(), L'/', L'\\');
         std::wstring dest = destDir + L"\\" + rel;
         if (e.isDir) {
             if (!makeDirs(dest)) {

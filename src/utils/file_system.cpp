@@ -3,6 +3,7 @@
 
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <shobjidl.h>
 
 namespace wrc {
 
@@ -303,7 +304,32 @@ bool deleteFileForever(const std::wstring& path) {
 }
 
 bool deleteToRecycleBin(const std::wstring& path) {
-    // SHFileOperation does not understand \\?\ — use the raw path.
+    // Preferred: IFileOperation — supports long paths and Recycle Bin properly.
+    HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool comHere = SUCCEEDED(hrInit);
+    if (comHere || hrInit == RPC_E_CHANGED_MODE) {
+        IFileOperation* fo = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_ALL,
+                                       IID_IFileOperation, (void**)&fo))) {
+            fo->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT |
+                                  FOF_NOERRORUI);
+            IShellItem* item = nullptr;
+            bool ok = false;
+            if (SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr,
+                                                      IID_IShellItem, (void**)&item))) {
+                if (SUCCEEDED(fo->DeleteItem(item, nullptr)) &&
+                    SUCCEEDED(fo->PerformOperations()))
+                    ok = true;
+                item->Release();
+            }
+            fo->Release();
+            if (comHere) CoUninitialize();
+            if (ok) return true;
+        } else if (comHere) {
+            CoUninitialize();
+        }
+    }
+    // Legacy fallback: SHFileOperation (raw path, MAX_PATH limited).
     std::wstring buf = path;
     buf.push_back(L'\0');
     buf.push_back(L'\0');

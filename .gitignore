@@ -32,3 +32,6 @@ test_data/
 # OS junk
 Thumbs.db
 .DS_Store
+
+test_data/
+*.pyc

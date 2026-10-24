@@ -285,7 +285,7 @@ void MainWindow::refreshArchive() {
 }
 
 void MainWindow::loadArchive(const std::wstring& path) {
-    std::wstring password;
+    std::wstring password = m_password;
     ArchiveInfo info;
     std::string err;
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -299,10 +299,22 @@ void MainWindow::loadArchive(const std::wstring& path) {
         password = pw.toStdWString();
     }
     if (!err.empty()) {
-        QMessageBox::warning(this, tr("Open archive"),
-                             QString::fromStdString(err));
+        QMessageBox::warning(this, tr("Open archive"), QString::fromStdString(err));
         return;
     }
+    // data-encrypted archives list fine but need the password for operations
+    bool anyEnc = false;
+    for (auto& e : info.entries)
+        if (e.encrypted) anyEnc = true;
+    if (anyEnc && password.empty()) {
+        bool ok = false;
+        QString pw = QInputDialog::getText(
+            this, tr("Password"),
+            tr("This archive contains encrypted files.\nEnter password:"),
+            QLineEdit::Password, QString(), &ok);
+        if (ok) password = pw.toStdWString();
+    }
+    m_password = password;
     m_info = info;
     m_path = QDir::toNativeSeparators(QString::fromStdWString(path));
     m_address->setText(m_path);
@@ -317,6 +329,7 @@ void MainWindow::loadArchive(const std::wstring& path) {
 void MainWindow::closeArchive() {
     QString dir = QFileInfo(m_path).absolutePath();
     m_info = ArchiveInfo{};
+    m_password.clear();
     setPath(dir);
     refreshBrowse();
 }
@@ -373,9 +386,9 @@ void MainWindow::runJob(const QString& title, uint64_t dictSize,
     auto* dlg = new ProgressDialog(this);
     if (dictSize) dlg->setDictLabel(dictSize);
     dlg->setWindowTitle(title);
-    dlg->execJob(job);
+    bool ok = dlg->execJob(job);
     dlg->deleteLater();
-    if (onSuccess) onSuccess();
+    if (ok && onSuccess) onSuccess();
 }
 
 // ------------------------------------------------------------------ actions
@@ -403,9 +416,10 @@ void MainWindow::onAdd() {
         std::vector<std::wstring> inputs;
         for (auto& f : files) inputs.push_back(f.toStdWString());
         QString archive = m_path;
+        std::wstring pw = m_password;
         runJob(tr("Adding files…"), m_info.dictSize,
-               [archive, inputs](ProgressDialog& d) {
-                   return appendFiles(archive.toStdWString(), L"", inputs,
+               [archive, inputs, pw](ProgressDialog& d) {
+                   return appendFiles(archive.toStdWString(), pw, inputs,
                                       [&](const Progress& p) {
                                           emit d.progressChanged(p);
                                       },
@@ -450,10 +464,11 @@ void MainWindow::onExtractTo() {
     if (dlg.exec() != QDialog::Accepted) return;
     QString dest = dlg.destination();
     std::wstring password = dlg.password().toStdWString();
+    if (password.empty()) password = m_password;
     QString archive = m_path;
-    bool all = sel.empty();
+    bool openIt = dlg.openAfter();
     runJob(tr("Extracting…"), m_info.dictSize,
-           [archive, dest, password, sel, all](ProgressDialog& d) {
+           [archive, dest, password, sel](ProgressDialog& d) {
                try {
                    std::vector<std::wstring> files;
                    std::string err = extractArchive(
@@ -467,21 +482,21 @@ void MainWindow::onExtractTo() {
                    return std::string(ex.what());
                }
            },
-           [dest] {
-               // open folder
-               QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
+           [dest, openIt] {
+               if (openIt) QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
            });
 }
 
 void MainWindow::onTest() {
     if (m_mode != Mode::ArchiveView) return;
     QString archive = m_path;
+    std::wstring pw = m_password;
     int bad = -1;
     runJob(tr("Testing archive…"), m_info.dictSize,
-           [archive, &bad](ProgressDialog& d) -> std::string {
+           [archive, &bad, pw](ProgressDialog& d) -> std::string {
                try {
                    std::string err = testArchive(
-                       archive.toStdWString(), L"",
+                       archive.toStdWString(), pw,
                        [&](const Progress& p) { emit d.progressChanged(p); },
                        [&] { return d.control(); }, bad);
                    if (!err.empty()) return err;
@@ -514,13 +529,13 @@ void MainWindow::onView() {
         if (detectFormat(archive) == Format::Wsar) {
             err.clear();
             std::vector<std::wstring> out;
-            if (!wsar::extract(archive, tempDir, L"", {name}, nullptr,
+            if (!wsar::extract(archive, tempDir, m_password, {name}, nullptr,
                                [] { return true; }, out, err))
                 err = "extract failed";
             files = out;
         } else {
-            err = extractArchive(archive, tempDir, L"", nullptr, [] { return true; },
-                                 &files);
+            err = extractArchive(archive, tempDir, m_password, nullptr,
+                                 [] { return true; }, &files);
         }
     } catch (const std::exception& ex) {
         err = ex.what();
@@ -549,9 +564,10 @@ void MainWindow::onDelete() {
             QMessageBox::Yes)
             return;
         QString archive = m_path;
+        std::wstring pw = m_password;
         runJob(tr("Deleting…"), m_info.dictSize,
-               [archive, sel](ProgressDialog& d) {
-                   return deleteEntries(archive.toStdWString(), L"", sel,
+               [archive, sel, pw](ProgressDialog& d) {
+                   return deleteEntries(archive.toStdWString(), pw, sel,
                                         [&](const Progress& p) {
                                             emit d.progressChanged(p);
                                         },
@@ -621,12 +637,13 @@ void MainWindow::onInfo() {
 void MainWindow::onRepair() {
     if (m_mode != Mode::ArchiveView) return;
     QString archive = m_path;
+    std::wstring pw = m_password;
     int kept = -1, dropped = -1;
     runJob(tr("Repairing archive…"), m_info.dictSize,
-           [archive, &kept, &dropped](ProgressDialog& d) -> std::string {
+           [archive, &kept, &dropped, pw](ProgressDialog& d) -> std::string {
                try {
                    std::string err = repairArchive(
-                       archive.toStdWString(), L"",
+                       archive.toStdWString(), pw,
                        [&](const Progress& p) { emit d.progressChanged(p); },
                        [&] { return d.control(); }, kept, dropped);
                    if (!err.empty()) return err;
@@ -764,9 +781,10 @@ void MainWindow::dropEvent(QDropEvent* ev) {
         std::vector<std::wstring> inputs;
         for (auto& f : files) inputs.push_back(f.toStdWString());
         QString archive = m_path;
+        std::wstring pw = m_password;
         runJob(tr("Adding files…"), m_info.dictSize,
-               [archive, inputs](ProgressDialog& d) {
-                   return appendFiles(archive.toStdWString(), L"", inputs,
+               [archive, inputs, pw](ProgressDialog& d) {
+                   return appendFiles(archive.toStdWString(), pw, inputs,
                                       [&](const Progress& p) {
                                           emit d.progressChanged(p);
                                       },

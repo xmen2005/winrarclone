@@ -51,7 +51,7 @@ static void putNum(std::vector<uint8_t>& v, uint64_t value) {
     for (int i = 0; i < n - 1; ++i) first |= uint8_t(0x80 >> i);
     first |= uint8_t((value >> (8 * (n - 1))) & (0xFF >> n));
     v.push_back(first);
-    for (int j = n - 2; j >= 0; --j) v.push_back(uint8_t(value >> (8 * j)));
+    for (int j = 0; j <= n - 2; ++j) v.push_back(uint8_t(value >> (8 * j)));
 }
 
 static void putU64(std::vector<uint8_t>& v, uint64_t x) {

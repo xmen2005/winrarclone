@@ -72,6 +72,7 @@ private:
     Mode m_mode = Mode::Browse;
     QString m_path;  // current directory (Browse) or archive path (ArchiveView)
     wrc::ArchiveInfo m_info;
+    std::wstring m_password;  // cached password for the open archive
 
     QTreeWidget* m_tree;
     QLineEdit* m_address;

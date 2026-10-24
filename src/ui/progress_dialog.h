@@ -18,8 +18,8 @@ public:
     ~ProgressDialog() override;
 
     // Runs `job` on a worker thread; the dialog shows live progress and blocks
-    // until the job completes. Returns the job's error string ("" = success).
-    void execJob(std::function<std::string(ProgressDialog&)> job);
+    // until the job completes. Returns true on success (no error, no cancel).
+    bool execJob(std::function<std::string(ProgressDialog&)> job);
 
     // Control function for the core engine (pause + cancel aware).
     bool control();

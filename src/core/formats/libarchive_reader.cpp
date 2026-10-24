@@ -163,6 +163,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
             archive_read_data_skip(r.a);
             continue;
         }
+        // Windows APIs (especially \\?\ paths) do not normalize '/' — use '\'
+        std::replace(name.begin(), name.end(), L'/', L'\\');
         std::wstring dest = destDir + L"\\" + name;
         if (isDir) {
             makeDirs(dest);
