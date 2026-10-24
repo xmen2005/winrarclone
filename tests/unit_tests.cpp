@@ -70,6 +70,9 @@ static std::string repetitiveData(size_t n) {
 static void testPaths() {
     std::wstring e = toExtendedPath(L"C:\\foo\\bar.txt");
     CHECK("toExtendedPath drive", e == L"\\\\?\\C:\\foo\\bar.txt");
+    // forward slashes are normalized (\\?\ does not treat them as separators)
+    std::wstring ef = toExtendedPath(L"C:/foo/bar.txt");
+    CHECK("toExtendedPath forward slashes", ef == L"\\\\?\\C:\\foo\\bar.txt");
     std::wstring e2 = toExtendedPath(L"\\\\?\\C:\\x");
     CHECK("toExtendedPath already extended", e2 == L"\\\\?\\C:\\x");
     std::wstring e3 = toExtendedPath(L"\\\\server\\share\\x");

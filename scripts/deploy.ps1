@@ -23,7 +23,7 @@ foreach ($dll in @('zlib1.dll','libarchive-19.dll','liblzma-5.dll','libbz2.dll',
                    'libstdc++-6.dll','libxml2-2.dll','libiconv-2.dll','libcharset-1.dll',
                    'libexpat-1.dll','libbrotlidec.dll','libbrotlicommon.dll')) {
     $p = "$MsysRoot\mingw64\bin\$dll"
-    if (Test-Path $p) Copy-Item $p $dist
+    if (Test-Path $p) { Copy-Item $p $dist }
 }
 
 Write-Host "`nDeployed to $dist" -ForegroundColor Green

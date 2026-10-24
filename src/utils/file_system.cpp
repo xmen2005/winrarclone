@@ -1,6 +1,7 @@
 // file_system.cpp
 #include "utils/file_system.h"
 
+#include <algorithm>
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
@@ -19,12 +20,15 @@ static const std::wstring kExtUNC = [] {
     return p;
 }();
 std::wstring toExtendedPath(const std::wstring& path) {
-    if (path.size() >= 4 && path.compare(0, 4, kExt) == 0) return path;
-    if (path.size() >= 2 && path[1] == L':') return kExt + path;
-    if (path.size() >= 2 && path[0] == L'\\' &&
-        path[1] == L'\\')
-        return kExtUNC + path.substr(2);
-    return path;
+    // normalize '/' -> '\' first: Windows APIs (notably \\?\ paths) do NOT
+    // treat them as separators
+    std::wstring p = path;
+    std::replace(p.begin(), p.end(), L'/', L'\\');
+    if (p.size() >= 4 && p.compare(0, 4, kExt) == 0) return p;
+    if (p.size() >= 2 && p[1] == L':') return kExt + p;
+    if (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\')
+        return kExtUNC + p.substr(2);
+    return p;
 }
 
 bool pathNeedsExtension(const std::wstring& path) {

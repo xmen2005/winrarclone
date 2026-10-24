@@ -123,6 +123,10 @@ bool list(const std::wstring& path, const std::wstring& password, ArchiveInfo& o
         e.size = e.isDir ? 0 : uint64_t(archive_entry_size(ae));
         e.mtime = uint64_t(archive_entry_mtime(ae));
         e.method = 0xFF;
+        // libarchive exposes the POSIX mode, not packed size / CRC — map the
+        // directory + read-only bits so the UI attribute column stays useful
+        mode_t mode = archive_entry_mode(ae);
+        e.attrs = (mode & S_IFDIR) ? 0x10 : ((mode & 0222) ? 0x20 : 0x21);
         out.entries.push_back(e);
         if (!e.isDir) out.totalOriginal += e.size;
     }
