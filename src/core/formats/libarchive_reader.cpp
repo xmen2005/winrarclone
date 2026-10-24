@@ -140,7 +140,7 @@ bool list(const std::wstring& path, const std::wstring& password, ArchiveInfo& o
 bool extract(const std::wstring& path, const std::wstring& destDir,
              const std::wstring& password, const std::vector<std::wstring>& only,
              const ProgressFn& pf, ControlFn cf, std::vector<std::wstring>& extracted,
-             std::string& err) {
+             std::string& err, const ExtractLimits& limits, OverwritePolicy overwrite) {
     ArchiveInfo pre;
     if (!list(path, password, pre, err)) return false;
     std::set<std::wstring> want(only.begin(), only.end());
@@ -149,6 +149,9 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         if (!e.isDir && (only.empty() || want.count(e.name))) total += e.size;
     ProgressTracker pt(Progress::Phase::Extract, total, pf);
     pt.check(cf);
+
+    uint64_t totalExtracted = 0;
+    uint32_t entriesExtracted = 0;
 
     Reader r;
     if (!r.open(path, password, err)) return false;
@@ -169,13 +172,36 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
             archive_read_data_skip(r.a);
             continue;
         }
-        // Windows APIs (especially \\?\ paths) do not normalize '/' — use '\'
+        // Windows APIs (especially \\?\ paths) do not normalize '/' - use '\'
         std::replace(name.begin(), name.end(), L'/', L'\\');
         std::wstring dest = destDir + L"\\" + name;
+
+        // Limits
+        uint64_t entrySize = isDir ? 0 : (uint64_t)archive_entry_size(ae);
+        if (limits.maxEntries && !isDir && entriesExtracted >= limits.maxEntries) { err = "too many entries"; return false; }
+        if (limits.maxEntrySize && !isDir && entrySize > limits.maxEntrySize) { err = "entry too large"; return false; }
+        if (limits.maxTotalBytes && !isDir && totalExtracted + entrySize > limits.maxTotalBytes) { err = "extraction exceeds limit"; return false; }
+
+        // Reparse point check
+        // (reuse wsar helper? define local)
+        auto isRp = [](const std::wstring& p) {
+            DWORD a = GetFileAttributesW(p.c_str());
+            if (a == INVALID_FILE_ATTRIBUTES) return false;
+            return (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+        };
+        if (isRp(destDir) || isRp(dest)) { err = "reparse point detected"; return false; }
+
         if (isDir) {
             makeDirs(dest);
             continue;
         }
+
+        // Overwrite policy
+        if (fileExists(dest)) {
+            if (overwrite == OverwritePolicy::Skip) { archive_read_data_skip(r.a); continue; }
+            if (overwrite == OverwritePolicy::Fail) { err = "file exists: " + toUtf8(dest); return false; }
+        }
+
         makeDirs(directoryOf(dest));
         pt.setFile(name);
         File outFile;
@@ -236,6 +262,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         outFile.close();
         applyEntryMeta(dest, ae);
         extracted.push_back(dest);
+        totalExtracted += (uint64_t)archive_entry_size(ae);
+        entriesExtracted++;
     }
     return true;
 }

@@ -11,7 +11,9 @@ std::string listArchive(const std::wstring& path, const std::wstring& password,
                         ArchiveInfo& out);
 std::string extractArchive(const std::wstring& path, const std::wstring& destDir,
                            const std::wstring& password, const ProgressFn& pf,
-                           ControlFn cf, std::vector<std::wstring>* extracted);
+                           ControlFn cf, std::vector<std::wstring>* extracted,
+                           const ExtractLimits& limits = ExtractLimits{},
+                           OverwritePolicy overwrite = OverwritePolicy::Skip);
 std::string testArchive(const std::wstring& path, const std::wstring& password,
                         const ProgressFn& pf, ControlFn cf, int& badEntries);
 // Rebuild keeping only entries that decompress + verify (WSAR archives).

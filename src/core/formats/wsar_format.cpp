@@ -1711,11 +1711,26 @@ bool list(const std::wstring& path, const std::wstring& password, WsarInfo& out,
     return true;
 }
 
+// ----------------------------------------------------------------- helpers
+static bool isReparsePoint(const std::wstring& path) {
+    DWORD a = GetFileAttributesW(toExtendedPath(path).c_str());
+    if (a == INVALID_FILE_ATTRIBUTES) return false;
+    return (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
+static bool checkOverwrite(const std::wstring& dest, OverwritePolicy policy, std::string& err) {
+    if (!fileExists(dest)) return true;
+    if (policy == OverwritePolicy::Replace) return true;
+    if (policy == OverwritePolicy::Skip) return false;
+    err = "file exists: " + toUtf8(dest);
+    return false;
+}
+
 // ----------------------------------------------------------------- extract
 bool extract(const std::wstring& path, const std::wstring& destDir,
              const std::wstring& password, const std::vector<std::wstring>& only,
              const ProgressFn& pf, ControlFn cf, std::vector<std::wstring>& extracted,
-             std::string& err) {
+             std::string& err, const ExtractLimits& limits, OverwritePolicy overwrite) {
     WsarInfo info;
     if (!list(path, password, info, err)) return false;
     std::vector<uint8_t> dataKey;
@@ -1745,6 +1760,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
     pt.check(cf);
 
     std::set<uint64_t> processedSolid;
+    uint64_t totalExtracted = 0;
+    uint32_t entriesExtracted = 0;
     for (auto& e : info.entries) {
         if (e.solid) {
             if (processedSolid.count(e.headerStart)) continue;
@@ -1821,12 +1838,20 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
             solidFile.close();
             std::set<std::wstring> want(only.begin(), only.end());
             for (const auto& sf : files) {
+                if (limits.maxEntries && entriesExtracted >= limits.maxEntries) { err = "too many entries"; return false; }
+                if (limits.maxEntrySize && sf.size > limits.maxEntrySize) { err = "entry too large"; return false; }
+                if (limits.maxTotalBytes && totalExtracted + sf.size > limits.maxTotalBytes) { err = "extraction exceeds limit"; return false; }
                 if (!only.empty() && !want.count(sf.name)) continue;
                 std::wstring clean;
                 if (!safeRelName(sf.name, clean)) continue;
                 std::wstring rel = clean;
                 std::replace(rel.begin(), rel.end(), L'/', L'\\');
                 std::wstring dest = destDir + L"\\" + rel;
+                if (isReparsePoint(destDir) || isReparsePoint(dest)) { err = "reparse point detected"; return false; }
+                if (fileExists(dest) && !checkOverwrite(dest, overwrite, err)) {
+                    if (overwrite == OverwritePolicy::Skip) { pt.addDone(sf.size); pt.check(cf); continue; }
+                    return false;
+                }
                 if (!makeDirs(directoryOf(dest))) { err = "cannot create folder: " + toUtf8(directoryOf(dest)); return false; }
                 pt.setFile(sf.name);
                 File outFile;
@@ -1866,6 +1891,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
                 if (crc != sf.crc) { err = "CRC mismatch: " + toUtf8(sf.name); return false; }
                 applyMeta(dest, sf.mtime, sf.attrs);
                 extracted.push_back(dest);
+                totalExtracted += sf.size;
+                entriesExtracted++;
                 pt.addDone(sf.size);
                 pt.check(cf);
             }
@@ -1873,6 +1900,24 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
             processedSolid.insert(e.headerStart);
             continue;
         }
+        if (e.solid) { /* handled above */ }
+
+        // Limits
+        if (limits.maxEntries && entriesExtracted >= limits.maxEntries) { err = "too many entries"; return false; }
+        if (limits.maxEntrySize && e.size > limits.maxEntrySize) { err = "entry too large"; return false; }
+        if (limits.maxTotalBytes && totalExtracted + e.size > limits.maxTotalBytes) { err = "extraction exceeds limit"; return false; }
+        if (limits.maxExpansionRatio > 0 && e.packedSize > 0) {
+            double ratio = (double)e.size / (double)e.packedSize;
+            if (ratio > limits.maxExpansionRatio) { err = "expansion ratio exceeded"; return false; }
+        }
+
+        // Reparse point check on destination and parents
+        // (check each path component)
+        {
+            std::wstring destCheck = destDir;
+            // We'll check after building dest; do below.
+        }
+
         if (!only.empty() && std::find(only.begin(), only.end(), e.name) == only.end())
             continue;
         std::wstring clean;
@@ -1881,6 +1926,13 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         // Windows APIs (especially \\?\ paths) do not normalize '/' — use '\'
         std::replace(rel.begin(), rel.end(), L'/', L'\\');
         std::wstring dest = destDir + L"\\" + rel;
+        // Reparse point check
+        if (isReparsePoint(destDir) || isReparsePoint(dest)) { err = "reparse point detected"; return false; }
+        // Overwrite policy
+        if (fileExists(dest) && !checkOverwrite(dest, overwrite, err)) {
+            if (overwrite == OverwritePolicy::Skip) { pt.addDone(e.size); pt.check(cf); continue; }
+            return false;
+        }
         if (e.isDir) {
             if (!makeDirs(dest)) {
                 err = "cannot create folder: " + toUtf8(dest);
@@ -1909,6 +1961,8 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
         }
         applyMeta(dest, e.mtime, e.attrs);
         extracted.push_back(dest);
+        totalExtracted += e.size;
+        entriesExtracted++;
         pt.addDone(e.size);
         pt.check(cf);
     }

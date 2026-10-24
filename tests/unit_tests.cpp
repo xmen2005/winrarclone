@@ -160,7 +160,7 @@ static void testWsar() {
     std::vector<std::wstring> extracted;
     CHECK("wsar extract (absolute dest, nested)",
           wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; },
-                        extracted, err) &&
+                        extracted, err, ExtractLimits{}, OverwritePolicy::Replace) &&
               extracted.size() >= 3);
     std::string back;
     CHECK("wsar nested content",
@@ -196,7 +196,7 @@ static void testZip() {
     std::string err;
     CHECK("zip extract (absolute dest, nested)",
           la::extract(tpath(L"unit\\t.zip"), dest, L"", {}, nullptr, [] { return true; },
-                      extracted, err) &&
+                      extracted, err, ExtractLimits{}, OverwritePolicy::Replace) &&
               extracted.size() >= 3);
     std::string back;
     CHECK("zip nested content",
@@ -227,7 +227,7 @@ static void test7z() {
     std::vector<std::wstring> extracted;
     CHECK("7z extract (absolute dest, nested)",
           la::extract(tpath(L"unit\\t.7z"), dest, L"", {}, nullptr, [] { return true; },
-                      extracted, err) &&
+                      extracted, err, ExtractLimits{}, OverwritePolicy::Replace) &&
               extracted.size() >= 3);
     std::string back;
     CHECK("7z nested content",
@@ -264,7 +264,7 @@ static void testEncryption() {
     std::vector<std::wstring> extracted;
     CHECK("encrypted extract",
           wsar::extract(opt.archivePath, dest, opt.password, {}, nullptr,
-                        [] { return true; }, extracted, err) &&
+                        [] { return true; }, extracted, err, ExtractLimits{}, OverwritePolicy::Replace) &&
               extracted.size() >= 3);
     std::string back;
     CHECK("encrypted content",
@@ -358,7 +358,7 @@ static void testEmptyFile() {
     std::wstring dest = tpath(L"unit\\empty_out");
     std::vector<std::wstring> extracted;
     CHECK("empty file extract",
-          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err, ExtractLimits{}, OverwritePolicy::Replace));
     std::string back;
     CHECK("empty file content", readFile(dest + L"\\empty.txt", back) && back.empty());
 }
@@ -377,7 +377,7 @@ static void testUnicodeName() {
     std::vector<std::wstring> extracted;
     std::string err;
     CHECK("unicode extract",
-          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err, ExtractLimits{}, OverwritePolicy::Replace));
     std::string back;
     CHECK("unicode content", readFile(dest + L"\\café_✓.txt", back) && back == "unicode content");
 }
@@ -404,7 +404,7 @@ static void testLongPathArchive() {
     std::vector<std::wstring> extracted;
     std::string err;
     CHECK("long path archive extract",
-          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+          wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err, ExtractLimits{}, OverwritePolicy::Replace));
 }
 
 int main() {
@@ -471,7 +471,7 @@ int main() {
         std::vector<std::wstring> extracted;
         std::string err;
         CHECK("large zstd extract",
-              wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err));
+              wsar::extract(opt.archivePath, dest, L"", {}, nullptr, [] { return true; }, extracted, err, ExtractLimits{}, OverwritePolicy::Replace));
         std::string back;
         CHECK("large zstd content",
               readFile(dest + L"\\large.txt", back) && back == randomData(1 << 20, 99));

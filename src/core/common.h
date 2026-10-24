@@ -11,6 +11,15 @@ namespace wrc {
 
 enum class Format { Wsar, Zip, SevenZip };
 
+enum class OverwritePolicy { Skip = 0, Fail = 1, Replace = 2 };
+
+struct ExtractLimits {
+    uint64_t maxTotalBytes = 0;   // 0 = no limit
+    uint64_t maxEntrySize = 0;    // 0 = no limit
+    uint32_t maxEntries = 0;      // 0 = no limit
+    double maxExpansionRatio = 0;  // 0 = no limit (packed* ratio)
+};
+
 enum class Method : int { Store = 0, Fastest = 1, Fast = 2, Normal = 3, Good = 4, Best = 5, Zstd = 6 };
 
 inline int deflateLevel(Method m) {

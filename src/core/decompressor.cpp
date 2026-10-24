@@ -113,16 +113,17 @@ std::string listArchive(const std::wstring& pathIn, const std::wstring& password
 
 std::string extractArchive(const std::wstring& pathIn, const std::wstring& destDir,
                            const std::wstring& password, const ProgressFn& pf,
-                           ControlFn cf, std::vector<std::wstring>* extracted) {
+                           ControlFn cf, std::vector<std::wstring>* extracted,
+                           const ExtractLimits& limits, OverwritePolicy overwrite) {
     std::vector<std::wstring> temps;
     std::wstring path = resolveInput(pathIn, temps);
     std::vector<std::wstring> files;
     std::string err;
     Format fmt = detectFormat(path);
     if (fmt == Format::Wsar) {
-        if (!wsar::extract(path, destDir, password, {}, pf, cf, files, err)) return err;
+        if (!wsar::extract(path, destDir, password, {}, pf, cf, files, err, limits, overwrite)) return err;
     } else {
-        if (!la::extract(path, destDir, password, {}, pf, cf, files, err)) return err;
+        if (!la::extract(path, destDir, password, {}, pf, cf, files, err, limits, overwrite)) return err;
     }
     propagateMotw(pathIn, files);
     if (extracted) *extracted = files;

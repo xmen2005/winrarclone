@@ -14,7 +14,8 @@ bool list(const std::wstring& path, const std::wstring& password, ArchiveInfo& o
 bool extract(const std::wstring& path, const std::wstring& destDir,
              const std::wstring& password, const std::vector<std::wstring>& only,
              const ProgressFn& pf, ControlFn cf, std::vector<std::wstring>& extracted,
-             std::string& err);
+             std::string& err, const ExtractLimits& limits = ExtractLimits{},
+             OverwritePolicy overwrite = OverwritePolicy::Skip);
 
 // Full read-through integrity verification.
 bool test(const std::wstring& path, const std::wstring& password, const ProgressFn& pf,
