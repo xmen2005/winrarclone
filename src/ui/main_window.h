@@ -17,6 +17,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow();
+    void openArchivePath(const std::wstring& path) { loadArchive(path); }
 
 protected:
     void dragEnterEvent(QDragEnterEvent* ev) override;

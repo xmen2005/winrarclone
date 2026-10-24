@@ -12,17 +12,19 @@
 
 #include <bcrypt.h>
 #include <zlib.h>
+#include <zstd.h>
 
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <set>
 
 namespace wrc {
 namespace wsar {
 
 static const uint8_t kMagic[8] = {'W', 'S', 'A', 'R', 0x1A, 0x07, 0x01, 0x00};
 static const uint64_t kFrameFixed = 26;  // magic8+crc4+hsize2+type1+flags1+rsv2+dlen8
-enum : uint8_t { H_MAIN = 1, H_FILE = 2, H_END = 3 };
+enum : uint8_t { H_MAIN = 1, H_FILE = 2, H_END = 3, H_SOLID = 4 };
 enum : uint32_t { AF_VOLUME = 1, AF_ENC_NAMES = 2, AF_SOLID = 4 };
 
 static void put16(std::vector<uint8_t>& v, uint16_t x) {
@@ -567,7 +569,7 @@ PackedItem deflateToTemp(const ScanItem& it, int level, const std::wstring& temp
 
 PackedItem lzssToTemp(const ScanItem& it, const LzssParams& lp,
                       const std::wstring& tempDir, int idx, ProgressTracker& pt,
-                      ControlFn cf, std::vector<uint32_t>& table) {
+                      ControlFn cf, std::vector<uint32_t>* table) {
     PackedItem res;
     res.method = 2;
     res.tempPath = tempDir + L"\\~wsar" + std::to_wstring(GetCurrentProcessId()) + L"_" +
@@ -584,7 +586,7 @@ PackedItem lzssToTemp(const ScanItem& it, const LzssParams& lp,
     std::vector<uint8_t> packed;
     try {
         pt.setFile(fileNameOf(it.fullPath));
-        lzssEncode(view, it.size, lp, packed, &table);
+        lzssEncode(view, it.size, lp, packed, table);
         res.crc = crc32Update(crc32Init(), view, it.size);
         pt.addDone(it.size);
         pt.check(cf);
@@ -595,11 +597,79 @@ PackedItem lzssToTemp(const ScanItem& it, const LzssParams& lp,
     }
     UnmapViewOfFile(view);
     CloseHandle(map);
+
+    // Wrap LZSS output in Deflate (entropy coding) when it helps.
+    std::vector<uint8_t> deflated;
+    if (lp.zlibLevel > 0 && !packed.empty()) {
+        z_stream zs{};
+        if (deflateInit2(&zs, lp.zlibLevel, Z_DEFLATED, -15, 9, Z_DEFAULT_STRATEGY) == Z_OK) {
+            std::vector<uint8_t> outBuf(1u << 20);
+            zs.next_in = packed.data();
+            zs.avail_in = uInt(packed.size());
+            int rc = Z_OK;
+            do {
+                zs.next_out = outBuf.data();
+                zs.avail_out = uint32_t(outBuf.size());
+                rc = deflate(&zs, Z_FINISH);
+                size_t have = outBuf.size() - zs.avail_out;
+                if (have) deflated.insert(deflated.end(), outBuf.data(), outBuf.data() + have);
+            } while (rc != Z_STREAM_END && zs.avail_out == 0);
+            deflateEnd(&zs);
+            if (rc != Z_STREAM_END) deflated.clear();
+        }
+    }
+
+    bool useDeflated = !deflated.empty() && deflated.size() < packed.size();
+    const std::vector<uint8_t>& toWrite = useDeflated ? deflated : packed;
+    res.method = useDeflated ? 3 : 2;  // 3 = LZSS+Deflate, 2 = raw LZSS
+
     File dst;
     if (!dst.openWriteTruncate(res.tempPath)) throw WrcError("temp file failed");
-    if (!dst.write(packed.data(), packed.size() ? uint32_t(packed.size()) : 0u))
+    if (!dst.write(toWrite.data(), toWrite.size() ? uint32_t(toWrite.size()) : 0u))
         throw WrcError("write failed");
-    res.packedSize = packed.size();
+    res.packedSize = toWrite.size();
+    return res;
+}
+
+PackedItem zstdToTemp(const ScanItem& it, const std::wstring& tempDir, int idx,
+                      ProgressTracker& pt, ControlFn cf, int level) {
+    PackedItem res;
+    res.method = 4;  // 4 = Zstd
+    res.tempPath = tempDir + L"\\~wsar" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+                   std::to_wstring(idx) + L".tmp";
+    File src;
+    if (!src.openRead(it.fullPath)) throw WrcError("cannot open: " + toUtf8(it.fullPath));
+    File dst;
+    if (!dst.openWriteTruncate(res.tempPath)) throw WrcError("temp file failed");
+    // Read entire file into memory.
+    std::vector<uint8_t> inData;
+    inData.resize(size_t(it.size));
+    uint32_t crc = crc32Init();
+    uint64_t done = 0;
+    while (done < it.size) {
+        if (cf && !cf()) throw CancelledError();
+        uint64_t want = std::min<uint64_t>(1u << 20, it.size - done);
+        uint32_t got = 0;
+        if (!src.read(inData.data() + done, uint32_t(want), got) || got == 0) throw WrcError("read failed");
+        crc = crc32Update(crc, inData.data() + done, got);
+        done += got;
+        pt.addDone(got);
+        pt.setFile(fileNameOf(it.fullPath));
+        pt.check(cf);
+    }
+    src.close();
+
+    size_t const maxOut = ZSTD_compressBound(inData.size());
+    std::vector<uint8_t> outBuf(maxOut);
+    if (level < 1) level = 1;
+    if (level > 22) level = 22;
+    size_t outSize = ZSTD_compress(outBuf.data(), maxOut, inData.data(), inData.size(), level);
+    if (ZSTD_isError(outSize)) throw WrcError("zstd compress failed");
+    outBuf.resize(outSize);
+    if (!dst.write(outBuf.data(), uint32_t(outSize))) throw WrcError("write failed");
+    res.packedSize = outSize;
+    res.crc = crc;
+    pt.check(cf);
     return res;
 }
 
@@ -683,6 +753,82 @@ bool extractEntry(PartStream& st, const FileEntry& e, uint64_t dataOff,
                   const std::vector<uint8_t>& dataKey, File& outFile, uint32_t& crcOut,
                   ControlFn cf, std::string& err) {
     CrcFileSink sink(outFile);
+    if (e.method == 3) {
+        // LZSS wrapped in Deflate (entropy coding).
+        std::vector<uint8_t> packed;
+        if (e.encrypted) {
+            if (!readRegionEncrypted(st, dataOff, e.packedSize, dataKey,
+                                     [&](const uint8_t* p, size_t n) {
+                                         packed.insert(packed.end(), p, p + n);
+                                     },
+                                     err))
+                return false;
+        } else {
+            packed.resize(size_t(e.packedSize));
+            size_t got = 0;
+            if (!st.pread(packed.data(), size_t(e.packedSize), dataOff, got) ||
+                got != e.packedSize) {
+                err = "read failed";
+                return false;
+            }
+        }
+        // inflate
+        std::vector<uint8_t> lzssBytes;
+        z_stream zs{};
+        if (inflateInit2(&zs, -15) != Z_OK) { err = "zlib init failed"; return false; }
+        std::vector<uint8_t> outBuf(1u << 20);
+        zs.next_in = packed.data();
+        zs.avail_in = uInt(packed.size());
+        int rc = Z_OK;
+        do {
+            zs.next_out = outBuf.data();
+            zs.avail_out = uint32_t(outBuf.size());
+            rc = inflate(&zs, Z_NO_FLUSH);
+            if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+                inflateEnd(&zs);
+                err = "inflate failed";
+                return false;
+            }
+            size_t have = outBuf.size() - zs.avail_out;
+            if (have) lzssBytes.insert(lzssBytes.end(), outBuf.data(), outBuf.data() + have);
+        } while (rc != Z_STREAM_END && zs.avail_out == 0);
+        inflateEnd(&zs);
+        if (!lzssDecode(lzssBytes.data(), lzssBytes.size(), sink, err)) return false;
+        crcOut = sink.crc();
+        return true;
+    }
+    if (e.method == 4) {
+        // Zstd
+        std::vector<uint8_t> packed;
+        if (e.encrypted) {
+            if (!readRegionEncrypted(st, dataOff, e.packedSize, dataKey,
+                                     [&](const uint8_t* p, size_t n) { packed.insert(packed.end(), p, p + n); },
+                                     err))
+                return false;
+        } else {
+            packed.resize(size_t(e.packedSize));
+            size_t got = 0;
+            if (!st.pread(packed.data(), size_t(e.packedSize), dataOff, got) ||
+                got != e.packedSize) {
+                err = "read failed";
+                return false;
+            }
+        }
+        size_t const outCap = e.size + (e.size / 10) + 64;
+        std::vector<uint8_t> outBuf(outCap > 0 ? outCap : 1);
+        size_t outSize = ZSTD_decompress(outBuf.data(), outBuf.size(), packed.data(), packed.size());
+        if (ZSTD_isError(outSize)) {
+            // retry with larger buffer
+            outBuf.resize(e.size + 1024);
+            outSize = ZSTD_decompress(outBuf.data(), outBuf.size(), packed.data(), packed.size());
+            if (ZSTD_isError(outSize)) { err = "zstd decompress failed"; return false; }
+        }
+        outBuf.resize(outSize);
+        // write to sink
+        sink.write(outBuf.data(), outBuf.size());
+        crcOut = sink.crc();
+        return true;
+    }
     if (e.method == 2) {
         // LZSS needs read-back into prior output — file-backed window
         if (e.encrypted) {
@@ -829,6 +975,146 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
            const ProgressFn& pf, ControlFn cf, uint64_t& totalIn, uint64_t& totalOut) {
     totalIn = 0;
     totalOut = 0;
+
+    // ---- Solid archive build (single compressed stream over all files) ----
+    if (opt.solid) {
+        uint64_t total = scanTotalSize(items);
+        ProgressTracker pt(Progress::Phase::Compress, total, pf);
+        pt.check(cf);
+
+        bool encrypt = !opt.password.empty();
+        std::vector<uint8_t> salt, dataKey;
+        if (encrypt) {
+            salt = opt.forcedSalt.size() == 16 ? opt.forcedSalt : randomBytes(16);
+            dataKey = pbkdf2Sha256(toUtf8(opt.password), salt, 200000, 32, 0x01);
+            if (dataKey.empty()) throw WrcError("crypto init failed");
+        }
+
+        // Read all files into one buffer, compute per-file CRCs.
+        struct SF { std::wstring name; uint64_t size; uint32_t crc; uint32_t attrs; uint64_t mtime; };
+        std::vector<SF> files;
+        std::vector<uint8_t> solidIn;
+        solidIn.reserve(total);
+        std::wstring tempDir = directoryOf(opt.archivePath);
+        for (const auto& it : items) {
+            if (it.isDir) continue;
+            if (cf && !cf()) throw CancelledError();
+            File f;
+            if (!f.openRead(it.fullPath)) throw WrcError("cannot open: " + toUtf8(it.fullPath));
+            std::vector<uint8_t> buf(1u << 20);
+            uint32_t crc = crc32Init();
+            uint64_t done = 0;
+            while (done < it.size) {
+                uint64_t want = std::min<uint64_t>(buf.size(), it.size - done);
+                uint32_t got = 0;
+                if (!f.read(buf.data(), uint32_t(want), got) || got == 0) throw WrcError("read failed");
+                crc = crc32Update(crc, buf.data(), got);
+                solidIn.insert(solidIn.end(), buf.data(), buf.data() + got);
+                done += got;
+                pt.addDone(got);
+                pt.check(cf);
+            }
+            f.close();
+            std::string n8 = toUtf8(it.relPath);
+            files.push_back({fromUtf8(n8), it.size, crc, it.attrs & 0xFF, it.mtime});
+        }
+
+        // Compress concatenated data with Deflate (level from method).
+        int level = deflateLevel(opt.method);
+        uint8_t codec = (level == 0) ? 0 : 1;
+        std::vector<uint8_t> packed;
+        if (level == 0) {
+            packed = solidIn;
+        } else {
+            z_stream zs{};
+            if (deflateInit2(&zs, level, Z_DEFLATED, -15, 9, Z_DEFAULT_STRATEGY) != Z_OK)
+                throw WrcError("zlib init failed");
+            std::vector<uint8_t> outBuf(1u << 20);
+            zs.next_in = solidIn.data();
+            zs.avail_in = uInt(solidIn.size());
+            // feed all input
+            int rc = Z_OK;
+            do {
+                zs.next_out = outBuf.data();
+                zs.avail_out = uint32_t(outBuf.size());
+                rc = deflate(&zs, Z_FINISH);
+                size_t have = outBuf.size() - zs.avail_out;
+                if (have) packed.insert(packed.end(), outBuf.data(), outBuf.data() + have);
+                if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
+                    deflateEnd(&zs);
+                    throw WrcError("deflate failed");
+                }
+            } while (rc != Z_STREAM_END);
+            deflateEnd(&zs);
+        }
+
+        // Write container.
+        std::wstring base = stripExtension(opt.archivePath);
+        MultiWriter out;
+        if (!out.open(opt.archivePath, base, opt.volumeSize))
+            throw WrcError("cannot create archive: " + toUtf8(opt.archivePath));
+        FrameWriter fw(out);
+        try {
+            // MAIN
+            uint32_t aflags = AF_SOLID;
+            if (opt.volumeSize) aflags |= AF_VOLUME;
+            std::vector<uint8_t> mainPayload;
+            put64(mainPayload, opt.dictSize);
+            put32(mainPayload, aflags);
+            if (encrypt) {
+                put32(mainPayload, uint32_t(salt.size()));
+                mainPayload.insert(mainPayload.end(), salt.begin(), salt.end());
+            }
+            fw.start(H_MAIN, 0, 0);
+            fw.payload(mainPayload.data(), mainPayload.size());
+            if (!fw.commit()) throw WrcError("write failed");
+
+            // H_SOLID frame
+            uint8_t encFlag = encrypt ? 1 : 0;
+            std::vector<uint8_t> pl;
+            pl.push_back(codec);
+            pl.push_back(encFlag);
+            put32(pl, uint32_t(files.size()));
+            for (const auto& fe : files) {
+                put64(pl, fe.size);
+                put32(pl, fe.crc);
+                put32(pl, fe.attrs);
+                put64(pl, fe.mtime);
+                std::string n8 = toUtf8(fe.name);
+                put16(pl, uint16_t(n8.size()));
+                pl.insert(pl.end(), n8.begin(), n8.end());
+            }
+            uint64_t dataLen = encrypt ? (16 + ((packed.size() / 16 + 1) * 16) + 16) : packed.size();
+            fw.start(H_SOLID, 0, dataLen);
+            fw.payload(pl.data(), pl.size());
+            if (!fw.commit()) throw WrcError("write failed");
+
+            // data region
+            if (encrypt) {
+                DataEncryptor de(dataKey, out);
+                de.feed(packed.data(), packed.size(), true);
+            } else {
+                if (!out.write(packed.data(), uint32_t(packed.size()))) throw WrcError("write failed");
+            }
+
+            // END
+            std::vector<uint8_t> endPl;
+            put32(endPl, uint32_t(out.parts().size()));
+            put32(endPl, 0);
+            fw.start(H_END, 0, 0);
+            fw.payload(endPl.data(), endPl.size());
+            if (!fw.commit()) throw WrcError("write failed");
+        } catch (...) {
+            out.close();
+            throw;
+        }
+        out.close();
+
+        totalIn = total;
+        for (auto& pp : out.parts()) totalOut += fileSizeOf(pp);
+        return true;
+    }
+
     uint64_t total = scanTotalSize(items);
     ProgressTracker pt(Progress::Phase::Compress, total, pf);
     pt.check(cf);
@@ -847,20 +1133,51 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
     // is allocated through DictionaryManager and borrowed by the encoder
     std::wstring tempDir = directoryOf(opt.archivePath);
     std::vector<PackedItem> packed(items.size());
-    bool useLzss = int(opt.method) >= int(Method::Normal);
+    bool useZstd = (opt.method == Method::Zstd);
+    bool useLzss = !useZstd && int(opt.method) >= int(Method::Normal);
     uint64_t effWindow = DictionaryManager::effectiveEncoderWindow(opt.dictSize);
     try {
         if (useLzss) {
-            DictionaryManager dm(effWindow);
-            if (!dm.allocate()) throw WrcError("out of memory for dictionary allocation");
-            std::vector<uint32_t>& dictTable = dm.table();
             LzssParams lp = lzssParamsForMethod(uint8_t(opt.method), opt.longRangeSearch,
                                                 opt.exhaustiveSearch);
             lp.window = effWindow;
-            for (size_t i = 0; i < items.size(); ++i) {
-                if (items[i].isDir) continue;
-                packed[i] = lzssToTemp(items[i], lp, tempDir, int(i), pt, cf, dictTable);
+            lp.zlibLevel = deflateLevel(opt.method);
+            // Parallel per-file compression (each file gets its own hash table).
+            unsigned hw = opt.multiThread
+                              ? (opt.threads > 0 ? unsigned(opt.threads)
+                                                 : std::thread::hardware_concurrency())
+                              : 1;
+            if (!hw) hw = 4;
+            std::vector<std::future<void>> futs;
+            {
+                ThreadPool pool(hw);
+                for (size_t i = 0; i < items.size(); ++i) {
+                    if (items[i].isDir) continue;
+                    futs.push_back(pool.submit([&items, &packed, &pt, cf, tempDir, i, lp] {
+                        packed[i] = lzssToTemp(items[i], lp, tempDir, int(i), pt, cf, nullptr);
+                    }));
+                }
+                pool.waitIdle();
             }
+            for (auto& f : futs) f.get();
+        } else if (useZstd) {
+            unsigned hw = opt.multiThread
+                              ? (opt.threads > 0 ? unsigned(opt.threads)
+                                                 : std::thread::hardware_concurrency())
+                              : 1;
+            if (!hw) hw = 4;
+            std::vector<std::future<void>> futs;
+            {
+                ThreadPool pool(hw);
+                for (size_t i = 0; i < items.size(); ++i) {
+                    if (items[i].isDir) continue;
+                    futs.push_back(pool.submit([&items, &packed, &pt, cf, tempDir, i, &opt] {
+                        packed[i] = zstdToTemp(items[i], tempDir, int(i), pt, cf, opt.zstdLevel);
+                    }));
+                }
+                pool.waitIdle();
+            }
+            for (auto& f : futs) f.get();
         } else {
             unsigned hw = opt.multiThread
                               ? (opt.threads > 0 ? unsigned(opt.threads)
@@ -1082,6 +1399,45 @@ bool list(const std::wstring& path, const std::wstring& password, WsarInfo& out,
     }
     while (rd.next(fr, err)) {
         if (fr.type == H_END) break;
+        if (fr.type == H_SOLID) {
+            const std::vector<uint8_t>& pl = fr.payload;
+            if (pl.size() < 6) continue;
+            size_t pos = 0;
+            uint8_t codec = pl[pos++];
+            uint8_t encFlag = pl[pos++];
+            uint32_t fileCount = rd32(pl.data() + pos); pos += 4;
+            uint64_t cum = 0;
+            for (uint32_t fi = 0; fi < fileCount; ++fi) {
+                if (pl.size() < pos + 8 + 4 + 4 + 8 + 2) break;
+                FileEntry e;
+                e.size = rd64(pl.data() + pos); pos += 8;
+                e.crc32 = rd32(pl.data() + pos); pos += 4;
+                e.attrs = rd32(pl.data() + pos); pos += 4;
+                e.mtime = rd64(pl.data() + pos); pos += 8;
+                uint16_t nameLen = rd16(pl.data() + pos); pos += 2;
+                if (pl.size() < pos + nameLen) break;
+                std::string n8(reinterpret_cast<const char*>(pl.data() + pos), nameLen);
+                pos += nameLen;
+                std::wstring name = fromUtf8(n8);
+                bool isDir = !name.empty() && name.back() == L'/';
+                if (isDir) name.pop_back();
+                std::wstring clean;
+                if (name.empty() || !safeRelName(isDir ? name + L"/x" : name, clean)) continue;
+                e.name = isDir ? clean.substr(0, clean.size() - 2) : clean;
+                e.isDir = isDir;
+                e.method = codec;
+                e.encrypted = encFlag != 0;
+                e.solid = true;
+                e.solidOffset = cum;
+                cum += e.size;
+                e.headerStart = fr.startOffset;
+                e.dataEnd = fr.endOffset;
+                out.entries.push_back(e);
+                if (!e.isDir) out.totalOriginal += e.size;
+            }
+            out.totalPacked += fr.dataLen;
+            continue;
+        }
         if (fr.type != H_FILE) continue;
         std::vector<uint8_t> pl = fr.payload;
         if (out.encryptedNames) {
@@ -1177,7 +1533,98 @@ bool extract(const std::wstring& path, const std::wstring& destDir,
     ProgressTracker pt(Progress::Phase::Extract, total, pf);
     pt.check(cf);
 
+    std::set<uint64_t> processedSolid;
     for (auto& e : info.entries) {
+        if (e.solid) {
+            if (processedSolid.count(e.headerStart)) continue;
+            // ---- solid block extraction (see implementation) ----
+            // parse + decompress + write files
+            uint8_t h[26]; size_t g0 = 0;
+            if (!st.pread(h, 26, e.headerStart, g0) || g0 != 26) { err = "read failed"; return false; }
+            uint16_t hsize = rd16(h + 12);
+            uint64_t dataLen = rd64(h + 18);
+            std::vector<uint8_t> payload(hsize);
+            if (hsize && (!st.pread(payload.data(), hsize, e.headerStart + kFrameFixed, g0) || g0 != hsize)) { err = "read failed"; return false; }
+            size_t pos = 0;
+            if (payload.size() < 6) { processedSolid.insert(e.headerStart); continue; }
+            uint8_t codec = payload[pos++];
+            uint8_t encFlag = payload[pos++];
+            uint32_t fileCount = rd32(payload.data() + pos); pos += 4;
+            struct SF { std::wstring name; uint64_t size; uint32_t crc; uint32_t attrs; uint64_t mtime; uint64_t off; };
+            std::vector<SF> files;
+            uint64_t cum = 0;
+            for (uint32_t fi = 0; fi < fileCount; ++fi) {
+                if (payload.size() < pos + 8 + 4 + 4 + 8 + 2) break;
+                SF f;
+                f.size = rd64(payload.data() + pos); pos += 8;
+                f.crc = rd32(payload.data() + pos); pos += 4;
+                f.attrs = rd32(payload.data() + pos); pos += 4;
+                f.mtime = rd64(payload.data() + pos); pos += 8;
+                uint16_t nameLen = rd16(payload.data() + pos); pos += 2;
+                if (payload.size() < pos + nameLen) break;
+                std::string n8(reinterpret_cast<const char*>(payload.data() + pos), nameLen);
+                pos += nameLen;
+                f.name = fromUtf8(n8);
+                f.off = cum;
+                cum += f.size;
+                files.push_back(f);
+            }
+            uint64_t dataOff = e.headerStart + kFrameFixed + hsize;
+            std::vector<uint8_t> packed;
+            if (encFlag) {
+                std::string rerr;
+                if (!readRegionEncrypted(st, dataOff, dataLen, dataKey,
+                                         [&](const uint8_t* p, size_t n) { packed.insert(packed.end(), p, p + n); },
+                                         rerr)) { err = rerr; return false; }
+            } else {
+                packed.resize(size_t(dataLen));
+                size_t g = 0;
+                if (!st.pread(packed.data(), size_t(dataLen), dataOff, g) || g != dataLen) { err = "read failed"; return false; }
+            }
+            std::vector<uint8_t> solidOut;
+            solidOut.reserve(size_t(cum));
+            if (codec == 0) solidOut = packed;
+            else {
+                z_stream zs{};
+                if (inflateInit2(&zs, -15) != Z_OK) { err = "zlib init failed"; return false; }
+                std::vector<uint8_t> outBuf(1u << 20);
+                zs.next_in = packed.data();
+                zs.avail_in = uInt(packed.size());
+                int rc = Z_OK;
+                do {
+                    zs.next_out = outBuf.data();
+                    zs.avail_out = uint32_t(outBuf.size());
+                    rc = inflate(&zs, Z_NO_FLUSH);
+                    if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) { inflateEnd(&zs); err = "inflate failed"; return false; }
+                    size_t have = outBuf.size() - zs.avail_out;
+                    if (have) solidOut.insert(solidOut.end(), outBuf.data(), outBuf.data() + have);
+                } while (rc != Z_STREAM_END && zs.avail_out == 0);
+                inflateEnd(&zs);
+            }
+            std::set<std::wstring> want(only.begin(), only.end());
+            for (const auto& sf : files) {
+                if (!only.empty() && !want.count(sf.name)) continue;
+                std::wstring clean;
+                if (!safeRelName(sf.name, clean)) continue;
+                std::wstring rel = clean;
+                std::replace(rel.begin(), rel.end(), L'/', L'\\');
+                std::wstring dest = destDir + L"\\" + rel;
+                if (!makeDirs(directoryOf(dest))) { err = "cannot create folder: " + toUtf8(directoryOf(dest)); return false; }
+                pt.setFile(sf.name);
+                File outFile;
+                if (!outFile.openWriteTruncate(dest)) { err = "cannot create: " + toUtf8(dest); return false; }
+                if (sf.size) outFile.write(solidOut.data() + sf.off, uint32_t(sf.size));
+                outFile.close();
+                uint32_t crc = crc32Update(crc32Init(), solidOut.data() + sf.off, sf.size);
+                if (crc != sf.crc) { err = "CRC mismatch: " + toUtf8(sf.name); return false; }
+                applyMeta(dest, sf.mtime, sf.attrs);
+                extracted.push_back(dest);
+                pt.addDone(sf.size);
+                pt.check(cf);
+            }
+            processedSolid.insert(e.headerStart);
+            continue;
+        }
         if (!only.empty() && std::find(only.begin(), only.end(), e.name) == only.end())
             continue;
         std::wstring clean;
@@ -1250,8 +1697,84 @@ bool test(const std::wstring& path, const std::wstring& password, const Progress
     ProgressTracker pt(Progress::Phase::Test, total, pf);
     pt.check(cf);
     std::wstring tempDir = directoryOf(path);
+    std::set<uint64_t> processedSolid;
     for (auto& e : info.entries) {
         if (e.isDir) continue;
+        if (e.solid) {
+            if (processedSolid.count(e.headerStart)) continue;
+            // parse + decompress + verify CRCs
+            uint8_t h[26]; size_t g0 = 0;
+            if (!st.pread(h, 26, e.headerStart, g0) || g0 != 26) { err = "read failed"; return false; }
+            uint16_t hsize = rd16(h + 12);
+            uint64_t dataLen = rd64(h + 18);
+            std::vector<uint8_t> payload(hsize);
+            if (hsize && (!st.pread(payload.data(), hsize, e.headerStart + kFrameFixed, g0) || g0 != hsize)) { err = "read failed"; return false; }
+            size_t pos = 0;
+            if (payload.size() < 6) { processedSolid.insert(e.headerStart); continue; }
+            uint8_t codec = payload[pos++];
+            uint8_t encFlag = payload[pos++];
+            uint32_t fileCount = rd32(payload.data() + pos); pos += 4;
+            struct SF { std::wstring name; uint64_t size; uint32_t crc; uint64_t off; };
+            std::vector<SF> files;
+            uint64_t cum = 0;
+            for (uint32_t fi = 0; fi < fileCount; ++fi) {
+                if (payload.size() < pos + 8 + 4 + 4 + 8 + 2) break;
+                SF f;
+                f.size = rd64(payload.data() + pos); pos += 8;
+                f.crc = rd32(payload.data() + pos); pos += 4;
+                pos += 4; // attrs
+                pos += 8; // mtime
+                uint16_t nameLen = rd16(payload.data() + pos); pos += 2;
+                if (payload.size() < pos + nameLen) break;
+                std::string n8(reinterpret_cast<const char*>(payload.data() + pos), nameLen);
+                pos += nameLen;
+                f.name = fromUtf8(n8);
+                f.off = cum;
+                cum += f.size;
+                files.push_back(f);
+            }
+            uint64_t dataOff = e.headerStart + kFrameFixed + hsize;
+            std::vector<uint8_t> packed;
+            if (encFlag) {
+                std::string rerr;
+                if (!readRegionEncrypted(st, dataOff, dataLen, dataKey,
+                                         [&](const uint8_t* p, size_t n) { packed.insert(packed.end(), p, p + n); },
+                                         rerr)) { err = rerr; return false; }
+            } else {
+                packed.resize(size_t(dataLen));
+                size_t g = 0;
+                if (!st.pread(packed.data(), size_t(dataLen), dataOff, g) || g != dataLen) { err = "read failed"; return false; }
+            }
+            std::vector<uint8_t> solidOut;
+            solidOut.reserve(size_t(cum));
+            if (codec == 0) solidOut = packed;
+            else {
+                z_stream zs{};
+                if (inflateInit2(&zs, -15) != Z_OK) { err = "zlib init failed"; return false; }
+                std::vector<uint8_t> outBuf(1u << 20);
+                zs.next_in = packed.data();
+                zs.avail_in = uInt(packed.size());
+                int rc = Z_OK;
+                do {
+                    zs.next_out = outBuf.data();
+                    zs.avail_out = uint32_t(outBuf.size());
+                    rc = inflate(&zs, Z_NO_FLUSH);
+                    if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) { inflateEnd(&zs); err = "inflate failed"; return false; }
+                    size_t have = outBuf.size() - zs.avail_out;
+                    if (have) solidOut.insert(solidOut.end(), outBuf.data(), outBuf.data() + have);
+                } while (rc != Z_STREAM_END && zs.avail_out == 0);
+                inflateEnd(&zs);
+            }
+            for (const auto& sf : files) {
+                pt.setFile(sf.name);
+                uint32_t crc = crc32Update(crc32Init(), solidOut.data() + sf.off, sf.size);
+                if (crc != sf.crc) ++badEntries;
+                pt.addDone(sf.size);
+                pt.check(cf);
+            }
+            processedSolid.insert(e.headerStart);
+            continue;
+        }
         pt.setFile(e.name);
         std::wstring tmp =
             tempDir + L"\\~wsartest" + std::to_wstring(GetCurrentProcessId()) + L".tmp";
@@ -1297,6 +1820,36 @@ bool rebuild(const std::wstring& path, const std::wstring& password,
             if (!e.isDir) keptBytes += e.size;
         }
     }
+    // Solid archives cannot be patched in place; convert kept solid entries to
+    // a non-solid rebuild by extracting them first.
+    bool hasSolid = false;
+    for (uint32_t idx : keepIdx)
+        if (info.entries[idx].solid) { hasSolid = true; break; }
+    if (hasSolid) {
+        std::wstring solidTemp = directoryOf(path) + L"\\~solidrebuild";
+        makeDirs(solidTemp);
+        std::vector<std::wstring> solidInputs;
+        std::vector<uint32_t> newKeepIdx;
+        std::vector<std::wstring> newKeepNames;
+        for (uint32_t idx : keepIdx) {
+            if (info.entries[idx].solid) {
+                std::vector<std::wstring> out;
+                std::string ex;
+                if (wsar::extract(path, solidTemp, password, {info.entries[idx].name}, nullptr, cf, out, ex))
+                    for (auto& f : out) solidInputs.push_back(f);
+            } else {
+                newKeepIdx.push_back(idx);
+                newKeepNames.push_back(info.entries[idx].name);
+            }
+        }
+        keepIdx = newKeepIdx;
+        std::vector<ScanItem> solidScanned = scanInputs(solidInputs);
+        newScanned.insert(newScanned.end(), solidScanned.begin(), solidScanned.end());
+        keptBytes = 0;
+        for (uint32_t idx : keepIdx)
+            if (!info.entries[idx].isDir) keptBytes += info.entries[idx].size;
+    }
+
     uint64_t newBytes = scanTotalSize(newScanned);
     ProgressTracker pt(Progress::Phase::Compress, keptBytes + newBytes, pf);
     pt.check(cf);

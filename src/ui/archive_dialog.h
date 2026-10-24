@@ -45,8 +45,9 @@ private:
     QComboBox* m_volume;
     QLineEdit* m_volumeCustom;
     QCheckBox *m_longRange, *m_exhaustive, *m_multiThread;
-    QCheckBox* m_deleteAfter;
+    QCheckBox *m_solid, *m_deleteAfter;
     QSpinBox* m_threads;
+    QSpinBox* m_zstdLevel;
     QLineEdit *m_password, *m_password2;
     QCheckBox* m_encryptNames;
     QString m_dir;

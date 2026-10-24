@@ -20,6 +20,7 @@ struct LzssParams {
     bool lazy = true;
     bool longRange = false;         // search the whole window
     bool exhaustive = false;        // very deep chains, no early exit
+    int zlibLevel = 6;             // deflate level used when wrapping LZSS output
 };
 
 // Method -> effort mapping (Store/Fastest/Fast normally use Deflate instead).

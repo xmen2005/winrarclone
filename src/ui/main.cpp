@@ -11,6 +11,8 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <windows.h>
 #include <shellapi.h>
@@ -74,8 +76,10 @@ int main(int argc, char** argv) {
                 return std::string();
             });
             if (ok) {
-                QMessageBox::information(nullptr, "WinRAR Clone",
-                                        QString::fromStdWString(L"Created " + opt.archivePath));
+                MainWindow win;
+                win.openArchivePath(opt.archivePath);
+                win.show();
+                return app.exec();
             }
             LocalFree(wargv);
             return ok ? 0 : 1;
@@ -119,12 +123,7 @@ int main(int argc, char** argv) {
                 }
             });
             if (ok) {
-                QMessageBox::information(nullptr, "WinRAR Clone",
-                                        QString("Extracted %1 file(s) to %2")
-                                            .arg((int)extracted.size())
-                                            .arg(QString::fromStdWString(out)));
-            } else {
-                // show error if any
+                QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdWString(out)));
             }
             LocalFree(wargv);
             return ok ? 0 : 1;
@@ -166,6 +165,11 @@ int main(int argc, char** argv) {
         // Other verbs: fall back to normal GUI (no verb handling).
     }
 
+    std::wstring openPath;
+    if (n > 1) {
+        std::wstring cand = wargv[1];
+        if (wrc::isArchiveFile(cand)) openPath = cand;
+    }
     LocalFree(wargv);
 
     QApplication app(argc, argv);
@@ -176,5 +180,6 @@ int main(int argc, char** argv) {
 
     MainWindow win;
     win.show();
+    if (!openPath.empty()) win.openArchivePath(openPath);
     return app.exec();
 }

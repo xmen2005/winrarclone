@@ -80,13 +80,13 @@ LzssParams lzssParamsForMethod(uint8_t method, bool longRange, bool exhaustive) 
     p.exhaustive = exhaustive;
     switch (method) {
         case 3:  // Normal
-            p.chainDepth = 64;
+            p.chainDepth = 128;
             break;
         case 4:  // Good
-            p.chainDepth = 512;
+            p.chainDepth = 1024;
             break;
         case 5:  // Best
-            p.chainDepth = 4096;
+            p.chainDepth = 8192;
             break;
         default:
             p.chainDepth = 32;
@@ -95,7 +95,7 @@ LzssParams lzssParamsForMethod(uint8_t method, bool longRange, bool exhaustive) 
     return p;
 }
 
-static const int HS_BITS = 22;
+static const int HS_BITS = 23;
 static const uint32_t HS_SIZE = 1u << HS_BITS;
 
 static inline uint32_t hash4(const uint8_t* p) {
@@ -192,7 +192,7 @@ void lzssEncode(const uint8_t* in, uint64_t inLen, const LzssParams& params,
         endToken();
     };
 
-    const uint32_t kNice = 192;
+    const uint32_t kNice = 256;
     for (uint64_t ip = 0; ip < inLen;) {
         if (ip + 4 > inLen) {
             for (; ip < inLen; ++ip) lit(in[ip]);

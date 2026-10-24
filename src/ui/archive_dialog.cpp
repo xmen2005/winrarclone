@@ -127,6 +127,7 @@ QWidget* ArchiveDialog::makeGeneralTab() {
     m_method->setCurrentIndex(3);
     m_method->addItem(tr("Good"));
     m_method->addItem(tr("Best"));
+    m_method->addItem(tr("Zstd"));
     form->addRow(tr("Compression method"), m_method);
 
     m_dict = new QComboBox(w);
@@ -186,13 +187,19 @@ QWidget* ArchiveDialog::makeGeneralTab() {
 QWidget* ArchiveDialog::makeAdvancedTab() {
     auto* w = new QWidget(this);
     auto* form = new QFormLayout(w);
+    m_solid = new QCheckBox(tr("Solid archive"), w);
     m_deleteAfter = new QCheckBox(tr("Delete files after archiving"), w);
     m_threads = new QSpinBox(w);
+    m_zstdLevel = new QSpinBox(w);
+    m_zstdLevel->setRange(1, 22);
+    m_zstdLevel->setValue(3);
     m_threads->setRange(0, 128);
     m_threads->setValue(0);
     m_threads->setSpecialValueText(tr("Auto"));
+    form->addRow(m_solid);
     form->addRow(m_deleteAfter);
     form->addRow(tr("Threads"), m_threads);
+    form->addRow(tr("Zstd level"), m_zstdLevel);
     auto* note = new QLabel(
         tr("Dictionary-mode compression (.wrc Normal/Good/Best) streams files "
            "through one shared dictionary window and is serial by design; "
@@ -291,9 +298,12 @@ bool ArchiveDialog::getOptions(QWidget* parent, const QString& defaultDir,
     out.longRangeSearch = dlg.m_longRange->isChecked();
     out.exhaustiveSearch = dlg.m_exhaustive->isChecked();
     out.multiThread = dlg.m_multiThread->isChecked();
+    out.solid = dlg.m_solid->isChecked();
     out.deleteAfter = dlg.m_deleteAfter->isChecked();
     out.threads = dlg.m_threads->value();
+    out.zstdLevel = dlg.m_zstdLevel->value();
     out.password = dlg.m_password->text().toStdWString();
     out.encryptNames = dlg.m_encryptNames->isChecked();
+    for (const QString& f : files) out.inputs.push_back(f.toStdWString());
     return true;
 }

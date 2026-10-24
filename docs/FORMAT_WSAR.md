@@ -18,7 +18,7 @@ All integers are **little-endian**. Text is UTF-8.
 u8   magic[8]      WSAR signature (repeated before every frame)
 u32  crc32         CRC32 of the bytes AFTER this field through end of payload
 u16  headerSize    payload size in bytes
-u8   type          1=MAIN 2=FILE 3=END
+u8   type          1=MAIN 2=FILE 3=END 4=SOLID
 u8   flags         reserved (0)
 u16  reserved      0
 u64  dataLen       size of the data region following the frame (plaintext)
@@ -87,6 +87,34 @@ Part file names: `<base>.part00001.wrc`, `<base>.part00002.wrc`, …
 Part 1 carries the signature + MAIN; parts ≥ 2 are **raw continuation
 slices** of the logical byte stream (no separate headers). Readers open all
 parts in order and treat them as one logical stream.
+
+## 6.1 Solid block (type 4) - optional
+
+A solid archive stores multiple files in a single compressed stream.
+
+```
+u8   magic[8]
+u32  crc32
+u16  headerSize
+u8   type          4 = SOLID
+u8   flags         0
+u16  reserved      0
+u64  dataLen       size of the compressed data region
+payload:
+    u8   codec          0=Store 1=Deflate
+    u8   encFlag        0x01 = data region encrypted
+    u32  fileCount
+    for each file:
+        u64  origSize
+        u32  crc32
+        u32  attrs
+        u64  mtime
+        u16  nameLen
+        u8   name[nameLen]
+data region:
+    compressed stream of concatenated file data
+    (encrypted form: [16B IV][cipher][16B MAC] when encFlag)
+```
 
 ## 7. Crypto (Windows CNG)
 

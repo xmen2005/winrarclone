@@ -23,8 +23,9 @@ a responsive Qt 6 interface and full Windows integration. 100% open source.
 - **lzss** — LZ77-class codec with configurable dictionary window.
 - **compressor / decompressor** — streaming pipelines, CRC32-verified,
   parallel first pass (thread pool), non-blocking UI.
-- **Formats** — WSAR (native, per-file Store/Deflate/LZSS), ZIP (Zip64,
-  per-entry methods), 7Z (one folder per file, Copy/Deflate codecs).
+- **Formats** - WSAR (native, per-file Store/Deflate/LZSS/**Zstd**, plus
+  **Solid** single-stream blocks), ZIP (Zip64, per-entry methods), 7Z (one
+  folder per file, Copy/Deflate codecs).
 
 ### Desktop UI (`src/ui`, Qt 6)
 Classic WinRAR layout per the specification mock-ups:
@@ -49,7 +50,7 @@ Classic WinRAR layout per the specification mock-ups:
 
 ### CLI (`wrclone.exe`)
 ```text
-wrclone a <archive> <files...> [--format wsar|zip|7z] [-m0..-m5] [--dict 64M]
+wrclone a <archive> <files...> [--format wsar|zip|7z] [-m0..-m6] [--dict 64M]
                                 [-v 700M|4.7G] [-p pass] [-hp pass] [--threads N]
 wrclone x <archive> [-o outdir] [-p pass]
 wrclone t <archive> [-p pass]
@@ -107,8 +108,8 @@ WinRAR_Clone/
 - The native `.wrc` container is RAR5-*inspired* but intentionally not
   bit-compatible with any proprietary format — see
   [`docs/FORMAT_WSAR.md`](docs/FORMAT_WSAR.md).
-- Dictionary-mode compression (.wrc Normal/Good/Best) streams files through a
-  shared window and is serial by design; Store/Fastest/Fast (Deflate) compress
-  files in parallel.
+- Dictionary-mode compression (.wrc Normal/Good/Best) compresses files in
+  parallel (each file gets its own dictionary window); Store/Fastest/Fast
+  (Deflate) also compress files in parallel.
 - The images in the original specification are illustrative mock-ups, not
   screenshots of any commercial program.

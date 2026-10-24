@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 namespace wrc {
 namespace shell {
@@ -62,6 +63,7 @@ bool integrate() {
     if (exe.empty()) return false;
     std::wstring cmdAdd = quoted(exe) + L" add \"%1\"";
     std::wstring cmdX = quoted(exe) + L" x \"%1\"";
+    std::wstring cmdOpen = quoted(exe) + L" \"%1\"";
     bool ok = true;
     ok &= writeValue(HKEY_CURRENT_USER, kAddKey, nullptr, L"Add to WRC archive");
     ok &= writeValue(HKEY_CURRENT_USER, (std::wstring(kAddKey) + L"\\command").c_str(),
@@ -72,6 +74,19 @@ bool integrate() {
     ok &= writeValue(HKEY_CURRENT_USER, kExtractKey, nullptr, L"Extract with WRC");
     ok &= writeValue(HKEY_CURRENT_USER,
                      (std::wstring(kExtractKey) + L"\\command").c_str(), nullptr, cmdX);
+
+    // File association for .wrc so Explorer shows an icon and opens with WRC.
+    ok &= writeValue(HKEY_CURRENT_USER, L"Software\\Classes\\.wrc", nullptr, L"WrcArchive");
+    ok &= writeValue(HKEY_CURRENT_USER, L"Software\\Classes\\WrcArchive", nullptr,
+                     L"WRC Archive");
+    ok &= writeValue(HKEY_CURRENT_USER, L"Software\\Classes\\WrcArchive\\DefaultIcon", nullptr,
+                     quoted(exe) + L",0");
+    ok &= writeValue(HKEY_CURRENT_USER,
+                     L"Software\\Classes\\WrcArchive\\shell\\open\\command", nullptr,
+                     cmdOpen);
+
+    // Refresh Explorer icon/association cache.
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return ok;
 }
 
@@ -83,6 +98,15 @@ bool unintegrate() {
           GetLastError() == ERROR_FILE_NOT_FOUND;
     ok &= RegDeleteTreeW(HKEY_CURRENT_USER, kDirAddKey) == ERROR_SUCCESS ||
           GetLastError() == ERROR_FILE_NOT_FOUND;
+    ok &= RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\WrcArchive") == ERROR_SUCCESS ||
+          GetLastError() == ERROR_FILE_NOT_FOUND;
+    // Remove extension mapping only if it points to WrcArchive.
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\.wrc", 0, KEY_READ, &k) == ERROR_SUCCESS) {
+        RegCloseKey(k);
+        RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\.wrc");
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return ok;
 }
 

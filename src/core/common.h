@@ -11,7 +11,7 @@ namespace wrc {
 
 enum class Format { Wsar, Zip, SevenZip };
 
-enum class Method : int { Store = 0, Fastest = 1, Fast = 2, Normal = 3, Good = 4, Best = 5 };
+enum class Method : int { Store = 0, Fastest = 1, Fast = 2, Normal = 3, Good = 4, Best = 5, Zstd = 6 };
 
 inline int deflateLevel(Method m) {
     switch (m) {
@@ -43,6 +43,8 @@ struct FileEntry {
     uint8_t method = 0;       // 0=store 1=deflate 2=lzss 0xFF=unknown
     bool isDir = false;
     bool encrypted = false;
+    bool solid = false;       // part of a solid block
+    uint64_t solidOffset = 0; // uncompressed offset within the solid block
 
     // rebuild bookkeeping (logical stream offsets, WSAR/ZIP)
     uint64_t headerStart = 0;
@@ -93,6 +95,7 @@ struct ArchiveOptions {
     std::wstring password;              // AES-256 when non-empty
     bool encryptNames = false;
     int threads = 0;                    // 0 = hardware concurrency
+    int zstdLevel = 3;                  // Zstd compression level (1..22)
     std::vector<uint8_t> forcedSalt;    // internal: rebuild reuses archive salt
 };
 

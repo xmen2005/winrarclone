@@ -153,8 +153,8 @@ std::string repairArchive(const std::wstring& path, const std::wstring& password
     if (fmt != Format::Wsar)
         return "repair is currently supported for native (.wrc) archives only";
     WsarInfo info;
-    std::string err;
-    if (!wsar::list(path, password, info, err)) return err;
+    std::string lerr;
+    if (!wsar::list(path, password, info, lerr)) return lerr;
     std::vector<uint8_t> dataKey;
     if (password.size()) {
         std::vector<uint8_t> salt =
@@ -215,7 +215,7 @@ std::string deleteEntries(const std::wstring& path, const std::wstring& password
         if (!wsar::list(path, password, info, err)) return err;
         std::vector<std::wstring> keep;
         for (auto& e : info.entries)
-            if (std::find(namesToRemove.begin(), namesToRemove.end(), e.name) ==
+            if (std::find(namesToRemove.begin(), namesToRemove.end(), e.name) == 
                 namesToRemove.end())
                 keep.push_back(e.name);
         wsar::rebuild(path, password, keep, {}, opt, pf, cf);

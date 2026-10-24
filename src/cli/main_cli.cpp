@@ -79,7 +79,7 @@ static void printUsage() {
     wout(L"  wrclone l <archive> [-p pass]");
     wout(L"  wrclone r <archive> [-p pass]");
     wout(L"  wrclone d <archive> <names...> [-p pass]");
-    wout(L"options: --format wsar|zip|7z  -m0..-m5  --dict 64M  -v 4.7G");
+    wout(L"options: --format wsar|zip|7z  -m0..-m6  --dict 64M  -v 4.7G");
     wout(L"         -p pass  -hp pass (encrypt names)  --threads N");
     wout(L"         --long-range  --exhaustive");
 }
@@ -127,6 +127,12 @@ int main() {
                     opt.longRangeSearch = true;
                 } else if (a == L"--exhaustive") {
                     opt.exhaustiveSearch = true;
+                } else if (a == L"--solid") {
+                    opt.solid = true;
+                } else if (a == L"--zstd") {
+                    opt.method = Method::Zstd;
+                } else if (a == L"--zstd-level" && i + 1 < int(args.size())) {
+                    opt.zstdLevel = wcstol(args[++i].c_str(), nullptr, 10);
                 } else if (a == L"--encrypt-names") {
                     opt.encryptNames = true;
                 } else {

@@ -39,13 +39,14 @@ add_library(wrc_core STATIC
     src/os_integration/context_menu.cpp
 )
 target_include_directories(wrc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(wrc_core PUBLIC ZLIB::ZLIB LibArchive::LibArchive bcrypt shell32 advapi32 ole32 uuid)
+target_link_libraries(wrc_core PUBLIC ZLIB::ZLIB LibArchive::LibArchive bcrypt shell32 advapi32 ole32 uuid zstd)
 
 # ---------------------------------------------------------------------------
 # CLI front-end (headless core engine)
 # ---------------------------------------------------------------------------
 add_executable(wrclone
     src/cli/main_cli.cpp
+    src/resources/app.rc
 )
 target_link_libraries(wrclone PRIVATE wrc_core)
 
@@ -59,6 +60,7 @@ add_executable(wrclone_gui WIN32
     src/ui/progress_dialog.cpp
     src/ui/extract_dialog.cpp
     src/ui/info_dialog.cpp
+    src/resources/app.rc
 )
 target_link_libraries(wrclone_gui PRIVATE wrc_core Qt6::Widgets)
 
