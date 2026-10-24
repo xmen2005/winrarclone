@@ -60,21 +60,22 @@ DictionaryManager::~DictionaryManager() { release(); }
 bool DictionaryManager::allocate() {
     if (dictSize_ == 0) return true;
     try {
-        window_.resize(static_cast<size_t>(dictSize_));
-        // Touch pages so the commit happens now, not mid-compression.
-        volatile unsigned char sink = 0;
-        for (size_t i = 0; i < window_.size(); i += 4096) window_[i] = 0, sink ^= window_[i];
+        // one 32-bit chain-slot per window byte (LZSS hash-chain table)
+        table_.assign(static_cast<size_t>(dictSize_), 0);
+        // touch pages so the commit happens now, not mid-compression
+        volatile uint32_t sink = 0;
+        for (size_t i = 0; i < table_.size(); i += 1024) table_[i] = 0, sink ^= table_[i];
         (void)sink;
         return true;
     } catch (...) {
-        window_.clear();
+        table_.clear();
         return false;
     }
 }
 
 void DictionaryManager::release() {
-    window_.clear();
-    window_.shrink_to_fit();
+    table_.clear();
+    table_.shrink_to_fit();
 }
 
 }  // namespace wrc

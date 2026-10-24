@@ -126,18 +126,18 @@ static void walkDir(const std::wstring& dir, const std::wstring& relPrefix,
 std::vector<ScanItem> scanInputs(const std::vector<std::wstring>& inputs) {
     std::vector<ScanItem> out;
     for (const auto& in : inputs) {
-        if (isDirectoryPath(in)) {
-            std::wstring base = fileNameOf(in.size() && in.back() == L'\\' || in.back() == L'/'
-                                               ? in.substr(0, in.size() - 1)
-                                               : in);
-            std::wstring full = in.size() && (in.back() == L'\\' || in.back() == L'/')
-                                    ? in.substr(0, in.size() - 1)
-                                    : in;
+        // trim trailing separators so "D:\dir\" behaves like "D:\dir"
+        std::wstring full = in;
+        while (!full.empty() && (full.back() == L'\\' || full.back() == L'/'))
+            full.pop_back();
+        if (full.empty() || full == L"\\\\?\\") continue;
+        if (isDirectoryPath(full)) {
+            std::wstring base = fileNameOf(full);
             out.push_back({full, base, 0, fileMtimeOf(full), fileAttrsOf(full), true});
             walkDir(full, base.empty() ? L"" : base, out);
-        } else if (fileExists(in)) {
-            out.push_back({in, fileNameOf(in), fileSizeOf(in), fileMtimeOf(in),
-                           fileAttrsOf(in), false});
+        } else if (fileExists(full)) {
+            out.push_back({full, fileNameOf(full), fileSizeOf(full), fileMtimeOf(full),
+                           fileAttrsOf(full), false});
         }
     }
     return out;
@@ -225,6 +225,8 @@ uint64_t File::tell() const {
 }
 
 uint64_t File::size() const {
+    // returns 0 on API failure AND for genuinely empty files - callers that
+    // must distinguish the two should use GetFileAttributesW/fileSizeOf()
     LARGE_INTEGER sz{};
     if (!GetFileSizeEx(h_, &sz)) return 0;
     return static_cast<uint64_t>(sz.QuadPart);
@@ -271,6 +273,8 @@ bool writeFileBytes(const std::wstring& path, const void* data, size_t len) {
 }
 
 bool makeDirs(const std::wstring& path) {
+    // 32768 wchar covers the documented maximum extended-path length; longer
+    // inputs cannot exist on NTFS
     wchar_t absBuf[32768];
     uint32_t n = GetFullPathNameW(path.c_str(), 32768, absBuf, nullptr);
     if (!n) return false;

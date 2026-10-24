@@ -41,7 +41,10 @@ bool isArchiveFile(const std::wstring& path) {
     if (e == L".wrc" || e == L".zip" || e == L".7z" || e == L".rar" || e == L".tar" ||
         e == L".gz" || e == L".bz2" || e == L".xz" || e == L".iso")
         return true;
-    if (e.size() == 4 && e[1] >= L'0' && e[1] <= L'9') return true;  // .001 volumes
+    // volume part: strictly .NNN (three digits)
+    if (e.size() == 4 && e[1] >= L'0' && e[1] <= L'9' && e[2] >= L'0' && e[2] <= L'9' &&
+        e[3] >= L'0' && e[3] <= L'9')
+        return true;
     static const uint8_t kWsar[8] = {'W', 'S', 'A', 'R', 0x1A, 0x07, 0x01, 0x00};
     static const uint8_t kZip[4] = {'P', 'K', 0x03, 0x04};
     static const uint8_t k7z[6] = {'7', 'z', 0xBC, 0xAF, 0x27, 0x1C};
@@ -64,11 +67,13 @@ static std::wstring resolveInput(const std::wstring& path, std::vector<std::wstr
 
 // ------------------------------------------------------ MOTW propagation
 // spec §3.c: propagate the archive's Zone.Identifier to extracted files.
+// Threshold is consistent with sec::hasInternetMark: zones >= 2
+// (Internet/Restricted) are "downloaded from the network" marks worth copying.
 static void propagateMotw(const std::wstring& archivePath,
                           const std::vector<std::wstring>& extracted) {
     int zone = 0;
     if (!readMotw(archivePath, zone)) return;
-    if (zone < 1) return;  // local files carry no mark worth copying
+    if (zone < 2) return;
     for (const auto& f : extracted) writeMotw(f, zone);
 }
 

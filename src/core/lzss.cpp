@@ -69,7 +69,8 @@ void LzssFileSink::readBack(uint64_t offset, void* buf, size_t len) {
         return;
     }
     uint32_t got = 0;
-    f_.pread(buf, uint32_t(len), offset, got);
+    if (!f_.pread(buf, uint32_t(len), offset, got)) got = 0;
+    if (got < len) memset(static_cast<uint8_t*>(buf) + got, 0, len - got);  // defensive
 }
 
 // ------------------------------------------------------------------ encoder

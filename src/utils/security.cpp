@@ -11,13 +11,18 @@ namespace wrc {
 
 // --------------------------------------------------------------------- MOTW
 static std::wstring adsPath(const std::wstring& file) {
+    // ADS is an NTFS concept - not available on UNC/network paths
+    if (file.rfind(L"\\\\?\\UNC\\", 0) == 0 || file.rfind(L"\\\\", 0) == 0)
+        return L"";
     std::wstring base = toExtendedPath(file);
     return base + L":Zone.Identifier";
 }
 
 bool readMotw(const std::wstring& file, int& zoneId) {
+    std::wstring ads = adsPath(file);
+    if (ads.empty()) return false;
     File f;
-    if (!f.openRead(adsPath(file))) return false;
+    if (!f.openRead(ads)) return false;
     std::string txt;
     char buf[512] = {};
     uint32_t got = 0;
@@ -27,13 +32,33 @@ bool readMotw(const std::wstring& file, int& zoneId) {
     }
     auto p = txt.find("ZoneId=");
     if (p == std::string::npos) return false;
-    zoneId = atoi(txt.c_str() + p + 7);
+    // strict numeric parse, clamped to the documented 0..4 range
+    long v = 0;
+    bool any = false;
+    for (const char* c = txt.c_str() + p + 7; *c; ++c) {
+        if (*c >= '0' && *c <= '9') {
+            v = v * 10 + (*c - '0');
+            any = true;
+        } else if (any) {
+            break;
+        } else if (*c != ' ' && *c != '\t') {
+            return false;
+        }
+        if (v > 4) {
+            v = 4;
+            break;
+        }
+    }
+    if (!any) return false;
+    zoneId = int(v);
     return true;
 }
 
 bool writeMotw(const std::wstring& file, int zoneId) {
+    std::wstring ads = adsPath(file);
+    if (ads.empty()) return false;
     File f;
-    if (!f.createAlways(adsPath(file))) return false;
+    if (!f.createAlways(ads)) return false;
     std::string txt = "[ZoneTransfer]\r\nZoneId=" + std::to_string(zoneId) + "\r\n";
     return f.write(txt.data(), uint32_t(txt.size()));
 }
@@ -50,7 +75,10 @@ void removeMotw(const std::wstring& file) {
 // ---------------------------------------------------------------------- CNG
 std::vector<uint8_t> randomBytes(size_t n) {
     std::vector<uint8_t> out(n);
-    if (n) BCryptGenRandom(nullptr, out.data(), ULONG(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (n == 0) return out;
+    if (BCryptGenRandom(nullptr, out.data(), ULONG(n),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+        out.clear();  // callers must check - empty = RNG failure
     return out;
 }
 
@@ -76,6 +104,7 @@ std::vector<uint8_t> pbkdf2Sha256(const std::string& password,
 
 bool aes256CbcEncrypt(const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv,
                       const std::vector<uint8_t>& plain, std::vector<uint8_t>& cipher) {
+    if (key.size() != 32 || iv.size() != 16) return false;
     BCRYPT_ALG_HANDLE hAlg = nullptr;
     BCRYPT_KEY_HANDLE hKey = nullptr;
     bool ok = false;
@@ -109,6 +138,7 @@ bool aes256CbcEncrypt(const std::vector<uint8_t>& key, const std::vector<uint8_t
 
 bool aes256CbcDecrypt(const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv,
                       const std::vector<uint8_t>& cipher, std::vector<uint8_t>& plain) {
+    if (key.size() != 32 || iv.size() != 16) return false;
     BCRYPT_ALG_HANDLE hAlg = nullptr;
     BCRYPT_KEY_HANDLE hKey = nullptr;
     bool ok = false;

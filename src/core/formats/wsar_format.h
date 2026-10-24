@@ -8,6 +8,7 @@ namespace wrc {
 struct WsarInfo : ArchiveInfo {
     std::vector<uint8_t> salt;
     uint32_t archiveFlags = 0;  // 1=volume 2=encryptedNames 4=solid
+    uint64_t volumeSize = 0;    // 0 = single volume (v1.1 archives)
 };
 
 namespace wsar {

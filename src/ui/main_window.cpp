@@ -31,6 +31,7 @@
 
 #include <QClipboard>
 #include <QDateTime>
+#include <memory>
 #include <QDesktopServices>
 #include <QDir>
 #include <QDragEnterEvent>
@@ -491,27 +492,27 @@ void MainWindow::onTest() {
     if (m_mode != Mode::ArchiveView) return;
     QString archive = m_path;
     std::wstring pw = m_password;
-    int bad = -1;
+    auto bad = std::make_shared<int>(-1);  // shared: worker writes, cb reads
     runJob(tr("Testing archive…"), m_info.dictSize,
-           [archive, &bad, pw](ProgressDialog& d) -> std::string {
+           [archive, bad, pw](ProgressDialog& d) -> std::string {
                try {
                    std::string err = testArchive(
                        archive.toStdWString(), pw,
                        [&](const Progress& p) { emit d.progressChanged(p); },
-                       [&] { return d.control(); }, bad);
+                       [&] { return d.control(); }, *bad);
                    if (!err.empty()) return err;
                } catch (const CancelledError&) {
                    return "__cancelled__";
                }
                return std::string();
            },
-           [this, &bad] {
-               if (bad < 0) return;
-               if (bad == 0)
+           [this, bad] {
+               if (*bad < 0) return;
+               if (*bad == 0)
                    QMessageBox::information(this, tr("Test"), tr("All files are OK"));
                else
                    QMessageBox::warning(this, tr("Test"),
-                                        tr("%1 file(s) failed").arg(bad));
+                                        tr("%1 file(s) failed").arg(*bad));
            });
 }
 
@@ -638,26 +639,27 @@ void MainWindow::onRepair() {
     if (m_mode != Mode::ArchiveView) return;
     QString archive = m_path;
     std::wstring pw = m_password;
-    int kept = -1, dropped = -1;
+    auto stats = std::make_shared<std::pair<int, int>>(-1, -1);
     runJob(tr("Repairing archive…"), m_info.dictSize,
-           [archive, &kept, &dropped, pw](ProgressDialog& d) -> std::string {
+           [archive, stats, pw](ProgressDialog& d) -> std::string {
                try {
                    std::string err = repairArchive(
                        archive.toStdWString(), pw,
                        [&](const Progress& p) { emit d.progressChanged(p); },
-                       [&] { return d.control(); }, kept, dropped);
+                       [&] { return d.control(); }, stats->first, stats->second);
                    if (!err.empty()) return err;
                } catch (const CancelledError&) {
                    return "__cancelled__";
                }
                return std::string();
            },
-           [this, &kept, &dropped] {
-               if (kept >= 0)
-                   QMessageBox::information(this, tr("Repair"),
-                                            tr("Kept %1 entries, dropped %2")
-                                                .arg(kept)
-                                                .arg(dropped));
+           [this, stats] {
+               if (stats->first >= 0)
+                   QMessageBox::information(
+                       this, tr("Repair"),
+                       tr("Kept %1 entries, dropped %2")
+                           .arg(stats->first)
+                           .arg(stats->second));
                loadArchive(m_path.toStdWString());
            });
 }

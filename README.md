@@ -56,6 +56,9 @@ wrclone t <archive> [-p pass]
 wrclone l <archive> [-p pass]
 wrclone r <archive> [-p pass]     (repair, .wrc only)
 wrclone d <archive> <names...> [-p pass]
+wrclone add <path>                (shell-integration entry point: archives
+                                   <path> next to itself - used by the
+                                   right-click "Add to WRC archive" verb)
 ```
 
 ## Build (MSYS2 / MinGW-w64)

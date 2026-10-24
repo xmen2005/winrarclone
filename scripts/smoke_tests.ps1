@@ -38,11 +38,15 @@ $parts = (Get-ChildItem ..\test_data\t_vols.part*.wrc).Count
 .\wrclone.exe x ..\test_data\t_vols.wrc -o ..\test_data\t_out\vols
 Check "multi-volume split+join" (($parts -gt 1) -and ((Get-Content "..\test_data\t_out\vols\sub\repetitive.txt" -Raw) -ceq (Get-Content ..\test_data\sub\repetitive.txt -Raw)))
 
-# 4) delete + append
+# 4) delete + append + volume-layout preservation
 .\wrclone.exe a ..\test_data\t_app.wrc ..\test_data\hello.txt -m1
 .\wrclone.exe d ..\test_data\t_app.wrc "hello.txt"
 .\wrclone.exe l ..\test_data\t_app.wrc
 Check "delete entries" ($LASTEXITCODE -eq 0)
+.\wrclone.exe a ..\test_data\t_pres.wrc ..\test_data\sub -m1 -v 100
+.\wrclone.exe d ..\test_data\t_pres.wrc "sub/repetitive.txt"
+$partsAfter = (Get-ChildItem ..\test_data\t_pres.part*.wrc -ErrorAction SilentlyContinue).Count
+Check "rebuild preserves volume layout" ($partsAfter -ge 2)
 
 # 5) MOTW propagation
 .\wrclone.exe a ..\test_data\t_dl.wrc ..\test_data\hello.txt -m1

@@ -32,7 +32,10 @@ Frame fixed size = 24 bytes.
 
 ```
 u64  dictSize       dictionary size in bytes (1 MB … 64 GB)
-u32  archiveFlags   0x01 multi-volume  0x02 encrypted-names  0x04 solid
+u32  archiveFlags   0x01 multi-volume  0x02 encrypted-names  0x04 solid (reserved)
+u64  volumeSize     bytes per volume (0 = single file) — v1.1 archives;
+                     readers of v1.0 archives must treat the remaining
+                     payload as the salt length field instead
 if (a salt follows — i.e. payload has ≥ 4 more bytes):
     u32 saltLen     16
     u8  salt[16]    PBKDF2 salt (stored whenever any encryption is used)

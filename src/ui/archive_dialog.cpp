@@ -186,13 +186,11 @@ QWidget* ArchiveDialog::makeGeneralTab() {
 QWidget* ArchiveDialog::makeAdvancedTab() {
     auto* w = new QWidget(this);
     auto* form = new QFormLayout(w);
-    m_solid = new QCheckBox(tr("Solid archive"), w);
     m_deleteAfter = new QCheckBox(tr("Delete files after archiving"), w);
     m_threads = new QSpinBox(w);
     m_threads->setRange(0, 128);
     m_threads->setValue(0);
     m_threads->setSpecialValueText(tr("Auto"));
-    form->addRow(m_solid);
     form->addRow(m_deleteAfter);
     form->addRow(tr("Threads"), m_threads);
     auto* note = new QLabel(
@@ -293,7 +291,6 @@ bool ArchiveDialog::getOptions(QWidget* parent, const QString& defaultDir,
     out.longRangeSearch = dlg.m_longRange->isChecked();
     out.exhaustiveSearch = dlg.m_exhaustive->isChecked();
     out.multiThread = dlg.m_multiThread->isChecked();
-    out.solid = dlg.m_solid->isChecked();
     out.deleteAfter = dlg.m_deleteAfter->isChecked();
     out.threads = dlg.m_threads->value();
     out.password = dlg.m_password->text().toStdWString();

@@ -68,6 +68,7 @@ public:
     }
     bool encrypt(const uint8_t* in, size_t n, uint8_t* out, size_t cap, size_t& outN,
                  std::vector<uint8_t>& iv, bool padding) {
+        if (iv.size() != 16) return false;
         ULONG cb = 0;
         if (BCryptEncrypt(hKey_, (PUCHAR)in, ULONG(n), nullptr, iv.data(), ULONG(iv.size()),
                           out, ULONG(cap), &cb,
@@ -78,6 +79,7 @@ public:
     }
     bool decrypt(const uint8_t* in, size_t n, uint8_t* out, size_t cap, size_t& outN,
                  std::vector<uint8_t>& iv, bool padding) {
+        if (iv.size() != 16) return false;
         ULONG cb = 0;
         if (BCryptDecrypt(hKey_, (PUCHAR)in, ULONG(n), nullptr, iv.data(), ULONG(iv.size()),
                           out, ULONG(cap), &cb,
@@ -615,7 +617,8 @@ public:
     void readBack(uint64_t offset, void* buf, size_t len) override {
         if (!len) return;
         uint32_t got = 0;
-        f_.pread(buf, uint32_t(len), offset, got);
+        if (!f_.pread(buf, uint32_t(len), offset, got)) got = 0;
+        if (got < len) memset(static_cast<uint8_t*>(buf) + got, 0, len - got);
     }
     uint32_t crc() const { return crc_; }
     uint64_t written() const { return written_; }
@@ -840,14 +843,17 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
         if (dataKey.empty() || nameKey.empty()) throw WrcError("crypto init failed");
     }
 
-    // pass 1 — compress (dictionary RAM gate per spec §3.a)
+    // pass 1 — compress (dictionary RAM gate per spec §3.a); the chain table
+    // is allocated through DictionaryManager and borrowed by the encoder
     std::wstring tempDir = directoryOf(opt.archivePath);
     std::vector<PackedItem> packed(items.size());
     bool useLzss = int(opt.method) >= int(Method::Normal);
     uint64_t effWindow = DictionaryManager::effectiveEncoderWindow(opt.dictSize);
     try {
         if (useLzss) {
-            std::vector<uint32_t> dictTable(size_t(effWindow), 0);
+            DictionaryManager dm(effWindow);
+            if (!dm.allocate()) throw WrcError("out of memory for dictionary allocation");
+            std::vector<uint32_t>& dictTable = dm.table();
             LzssParams lp = lzssParamsForMethod(uint8_t(opt.method), opt.longRangeSearch,
                                                 opt.exhaustiveSearch);
             lp.window = effWindow;
@@ -896,6 +902,7 @@ bool build(const std::vector<ScanItem>& items, const ArchiveOptions& opt,
         std::vector<uint8_t> mainPayload;
         put64(mainPayload, opt.dictSize);
         put32(mainPayload, aflags);
+        put64(mainPayload, opt.volumeSize);  // v1.1: preserved for rebuild
         if (encrypt) {  // salt always stored when data/name encryption is used
             put32(mainPayload, uint32_t(salt.size()));
             mainPayload.insert(mainPayload.end(), salt.begin(), salt.end());
@@ -1042,6 +1049,12 @@ bool list(const std::wstring& path, const std::wstring& password, WsarInfo& out,
     out.multiVolume = (out.archiveFlags & AF_VOLUME) != 0;
     out.encryptedNames = (out.archiveFlags & AF_ENC_NAMES) != 0;
     size_t mpOff = 12;
+    // v1.1 archives carry the volume size so rebuilds preserve the layout;
+    // v1.0 payloads continue with the salt length field instead
+    if (mp.size() >= mpOff + 8 && rd64(mp.data() + mpOff) <= (64ull << 30)) {
+        out.volumeSize = rd64(mp.data() + mpOff);
+        mpOff += 8;
+    }
     if (mp.size() >= mpOff + 4) {
         // salt is stored whenever encryption is used (data or names)
         uint32_t saltLen = rd32(mp.data() + mpOff);
@@ -1311,11 +1324,13 @@ bool rebuild(const std::wstring& path, const std::wstring& password,
         newEntries = newInfo.entries;
     }
 
-    // pass 2 — assemble new container next to the original
+    // pass 2 — assemble new container next to the original, preserving the
+    // original volume layout (delete/append must not collapse multi-part sets)
+    const uint64_t volSize = opt.volumeSize ? opt.volumeSize : info.volumeSize;
     std::wstring base = stripExtension(path);
     std::wstring newFirst = base + L".~new";
     MultiWriter out;
-    if (!out.open(newFirst, newFirst, opt.volumeSize)) throw WrcError("cannot create temp");
+    if (!out.open(newFirst, newFirst, volSize)) throw WrcError("cannot create temp");
     FrameWriter fw(out);
     PartStream stOld;
     if (!stOld.open(path)) {
@@ -1324,14 +1339,17 @@ bool rebuild(const std::wstring& path, const std::wstring& password,
         throw WrcError("cannot reopen original");
     }
     try {
-        // MAIN (preserve flags; keep old salt, or adopt the temp build's salt
-        // when the archive had none and new entries are encrypted)
+        // MAIN (preserve flags, dict, volume size; keep old salt, or adopt the
+        // temp build's salt when the archive had none and new entries are
+        // encrypted)
         std::vector<uint8_t> salt = info.salt;
         uint32_t aflags = info.archiveFlags;
+        if (volSize) aflags |= AF_VOLUME;
         if (salt.empty() && !newInfo.salt.empty()) salt = newInfo.salt;
         std::vector<uint8_t> mainPayload;
         put64(mainPayload, info.dictSize);
         put32(mainPayload, aflags);
+        put64(mainPayload, volSize);
         if (!salt.empty()) {
             put32(mainPayload, uint32_t(salt.size()));
             mainPayload.insert(mainPayload.end(), salt.begin(), salt.end());
@@ -1411,7 +1429,7 @@ bool rebuild(const std::wstring& path, const std::wstring& password,
     }
     for (auto& p : oldParts) deleteFileForever(p);
     const auto& newParts = out.parts();
-    if (opt.volumeSize > 0) {
+    if (volSize > 0) {
         for (size_t i = 0; i < newParts.size(); ++i) {
             wchar_t nb[24];
             swprintf(nb, 24, L".part%05d.wrc", int(i + 1));

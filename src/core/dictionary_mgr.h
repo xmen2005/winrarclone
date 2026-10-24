@@ -34,14 +34,16 @@ public:
     DictionaryManager(const DictionaryManager&) = delete;
     DictionaryManager& operator=(const DictionaryManager&) = delete;
 
-    bool allocate();   // reserve & commit window memory (touch pages)
+    bool allocate();   // reserve & commit dictionary memory (touch pages)
     void release();
-    void* data() { return window_.data(); }
+    // The chain-table allocated by allocate() - borrowed by the LZSS encoder.
+    std::vector<uint32_t>& table() { return table_; }
+    void* data() { return table_.data(); }
     uint64_t size() const { return dictSize_; }
 
 private:
     uint64_t dictSize_;
-    std::vector<unsigned char> window_;
+    std::vector<uint32_t> table_;
 };
 
 }  // namespace wrc

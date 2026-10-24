@@ -18,6 +18,21 @@ std::wstring exePath() {
     return std::wstring(buf, n);
 }
 
+// The shell verbs should invoke the GUI binary so the user gets a progress
+// dialog (WinRAR-like).  Resolve wrclone_gui.exe next to the current module;
+// fall back to the current module if it is missing.
+static std::wstring uiExePath() {
+    std::wstring cur = exePath();
+    std::wstring dir = cur;
+    size_t slash = dir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) dir = dir.substr(0, slash + 1);
+    std::wstring ui = dir + L"wrclone_gui.exe";
+    DWORD a = GetFileAttributesW(ui.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY))
+        return ui;
+    return cur;
+}
+
 static std::wstring quoted(const std::wstring& s) { return L"\"" + s + L"\""; }
 
 static bool writeValue(HKEY root, const wchar_t* sub, const wchar_t* name,
@@ -43,7 +58,7 @@ static bool keyExists(const wchar_t* sub) {
 bool isIntegrated() { return keyExists(kAddKey); }
 
 bool integrate() {
-    std::wstring exe = exePath();
+    std::wstring exe = uiExePath();
     if (exe.empty()) return false;
     std::wstring cmdAdd = quoted(exe) + L" add \"%1\"";
     std::wstring cmdX = quoted(exe) + L" x \"%1\"";
